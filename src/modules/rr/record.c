@@ -527,9 +527,12 @@ int record_route_preset(struct sip_msg* _m, str* _data)
 	}
 
 	if (add_username) {
-		if (get_username(_m, &user) < 0) {
-			LM_ERR("failed to extract username\n");
-			return -1;
+		/* check if there is a custom user set */
+		if (get_custom_user(_m, &user) < 0) {
+			if (get_username(_m, &user) < 0) {
+				LM_ERR("failed to extract username\n");
+				return -1;
+			}
 		}
 	} else if (use_ob == 1) {
 		if (rr_obb.encode_flow_token(&user, &_m->rcv) != 0) {
@@ -570,7 +573,7 @@ int record_route_preset(struct sip_msg* _m, str* _data)
 		hdr.len += user.len + 1; /* @ */
 	hdr.len += _data->len;
 
-	if (append_fromtag && from->tag_value.len) {
+	if (append_fromtag && from && from->tag_value.len) {
 		hdr.len += RR_FROMTAG_LEN + from->tag_value.len;
 	}
 
@@ -612,7 +615,7 @@ int record_route_preset(struct sip_msg* _m, str* _data)
 	memcpy(p, _data->s, _data->len);
 	p += _data->len;
 
-	if (append_fromtag && from->tag_value.len) {
+	if (append_fromtag && from && from->tag_value.len) {
 		memcpy(p, RR_FROMTAG, RR_FROMTAG_LEN);
 		p += RR_FROMTAG_LEN;
 		memcpy(p, from->tag_value.s, from->tag_value.len);
@@ -814,9 +817,12 @@ int record_route_advertised_address(struct sip_msg* _m, str* _data)
 	user.s = 0;
 
 	if (add_username) {
-		if (get_username(_m, &user) < 0) {
-			LM_ERR("failed to extract username\n");
-			return -1;
+		/* check if there is a custom user set */
+		if (get_custom_user(_m, &user) < 0) {
+			if (get_username(_m, &user) < 0) {
+				LM_ERR("failed to extract username\n");
+				return -1;
+			}
 		}
 	} else if (use_ob == 1) {
 		if (rr_obb.encode_flow_token(&user, &_m->rcv) != 0) {

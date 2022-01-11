@@ -101,6 +101,7 @@ MODULE_VERSION
 #define NAT_UAC_TEST_WS 0x40
 #define NAT_UAC_TEST_C_PORT 0x80
 #define NAT_UAC_TEST_SDP_CLINE 0x100
+#define NAT_UAC_TEST_DEST 0x200
 
 #define DEFAULT_NATPING_STATE 1
 
@@ -112,6 +113,7 @@ static int add_contact_alias_3_f(struct sip_msg *, char *, char *, char *);
 static int set_contact_alias_f(struct sip_msg *msg, char *str1, char *str2);
 static int w_set_contact_alias_f(struct sip_msg *msg, char *str1, char *str2);
 static int handle_ruri_alias_f(struct sip_msg *, char *, char *);
+static int handle_ruri_alias_mode_f(sip_msg_t *msg, char *pmode, char *p2);
 static int pv_get_rr_count_f(struct sip_msg *, pv_param_t *, pv_value_t *);
 static int pv_get_rr_top_count_f(struct sip_msg *, pv_param_t *, pv_value_t *);
 static int fix_nated_sdp_f(struct sip_msg *, char *, char *);
@@ -217,6 +219,9 @@ static cmd_export_t cmds[] = {
 		fixup_int_1, 0, REQUEST_ROUTE|ONREPLY_ROUTE|BRANCH_ROUTE|LOCAL_ROUTE},
 	{"handle_ruri_alias",  (cmd_function)handle_ruri_alias_f,    0,
 		0, 0,
+		REQUEST_ROUTE|BRANCH_ROUTE|LOCAL_ROUTE},
+	{"handle_ruri_alias",  (cmd_function)handle_ruri_alias_mode_f, 1,
+		fixup_igp_null, fixup_free_igp_null,
 		REQUEST_ROUTE|BRANCH_ROUTE|LOCAL_ROUTE},
 	{"fix_nated_sdp",      (cmd_function)fix_nated_sdp_f,        1,
 		fixup_fix_sdp,  0,
@@ -1117,14 +1122,14 @@ static int add_contact_alias_3_f(
 #define ALIAS_LEN (sizeof(ALIAS) - 1)
 
 /*
- * Checks if r-uri has alias param and if so, removes it and sets $du
- * based on its value.
+ * Checks if r-uri has alias param and if so, removes the first (mode==0)
+ * or the last one (mode!=0) and sets $du based on its value.
  */
-static int handle_ruri_alias(struct sip_msg *msg)
+static int ki_handle_ruri_alias_mode(struct sip_msg *msg, int mode)
 {
 	str uri, proto;
 	char buf[MAX_URI_SIZE], *val, *sep, *at, *next, *cur_uri, *rest, *port,
-			*trans;
+			*trans, *start;
 	unsigned int len, rest_len, val_len, alias_len, proto_type, cur_uri_len,
 			ip_port_len;
 
@@ -1138,23 +1143,33 @@ static int handle_ruri_alias(struct sip_msg *msg)
 		LM_DBG("no params\n");
 		return 2;
 	}
-	while(rest_len >= ALIAS_LEN) {
-		if(strncmp(rest, ALIAS, ALIAS_LEN) == 0)
-			break;
+	start = NULL;
+	/* locate last alias parameter */
+	while(rest_len > ALIAS_LEN + 4) {
+		if(strncmp(rest, ALIAS, ALIAS_LEN) == 0) {
+			start = rest;
+			if(mode==0) {
+				/* use first alias parameter */
+				break;
+			}
+			rest = rest + ALIAS_LEN;
+			rest_len = rest_len - ALIAS_LEN;
+		}
 		sep = memchr(rest, 59 /* ; */, rest_len);
 		if(sep == NULL) {
-			LM_DBG("no alias param\n");
-			return 2;
+			/* no other parameters */
+			break;
 		} else {
 			rest_len = rest_len - (sep - rest + 1);
 			rest = sep + 1;
 		}
 	}
 
-	if(rest_len < ALIAS_LEN) {
+	if(start == NULL) {
 		LM_DBG("no alias param\n");
 		return 2;
 	}
+	rest = start;
 
 	/* set dst uri based on alias param value */
 	val = rest + ALIAS_LEN;
@@ -1225,9 +1240,36 @@ static int handle_ruri_alias(struct sip_msg *msg)
 	return rewrite_uri(msg, &uri);
 }
 
+/*
+ * Checks if r-uri has alias param and if so, removes the first one and sets $du
+ * based on its value.
+ */
+static int ki_handle_ruri_alias(struct sip_msg *msg)
+{
+	return ki_handle_ruri_alias_mode(msg, 0);
+}
+
+/*
+ * Checks if r-uri has alias param and if so, removes the first one and sets $du
+ * based on its value.
+ */
 static int handle_ruri_alias_f(struct sip_msg *msg, char *str1, char *str2)
 {
-	return handle_ruri_alias(msg);
+	return ki_handle_ruri_alias_mode(msg, 0);
+}
+
+/*
+ * Checks if r-uri has alias param and if so, removes the first or the last one
+ * and sets $du based on its value.
+ */
+static int handle_ruri_alias_mode_f(struct sip_msg *msg, char *pmode, char *str2)
+{
+	int mode = 0;
+	if(fixup_get_ivalue(msg, (gparam_t*)pmode, &mode)<0) {
+		LM_ERR("failed to get the value for mode parameter\n");
+		return -1;
+	}
+	return ki_handle_ruri_alias_mode(msg, mode);
 }
 
 /*
@@ -1499,6 +1541,125 @@ static int via_1918(struct sip_msg *msg)
 	return (is1918addr(&(msg->via1->host)) == 1) ? 1 : 0;
 }
 
+/*
+ * test if destination address is different than R-URI/2nd Via
+ * - ws/wss target is true
+ */
+static int nh_test_destination(sip_msg_t *msg)
+{
+	str rhost = STR_NULL;
+	int rport = 0;
+	str dhost = STR_NULL;
+	int dport = 0;
+	sip_uri_t pduri;
+	ip_addr_t *rhostip = NULL;
+	ip_addr_t *dhostip = NULL;
+
+	if(msg==NULL)
+		return -1;
+
+	if(msg->first_line.type == SIP_REPLY) {
+		if(parse_headers(msg, HDR_VIA2_F, 0)==-1) {
+			LM_DBG("no 2nd via parsed\n");
+			return 0;
+		}
+		if((msg->via2==0) || (msg->via2->error!=PARSE_OK)) {
+			return -1;
+		}
+		if(msg->via2->proto==PROTO_WSS || msg->via2->proto==PROTO_WS) {
+			/* going to ws/wss */
+			return 1;
+		}
+		if(msg->via2->rport && msg->via2->rport->value.s
+				 && msg->via2->rport->value.len>0) {
+			if(str2sint(&msg->via2->rport->value, &dport)<0) {
+				LM_ERR("invalid rport value\n");
+				return -1;
+			}
+		}
+		if(dport!=0) {
+			rport = GET_SIP_PORT(msg->via2->port, msg->via2->proto);
+			if(dport != rport) {
+				/* ports are different */
+				return 1;
+			}
+		}
+		if(!msg->via2->received) {
+			/* no received param - going to Via host */
+			return 0;
+		}
+		dhost = msg->via2->received->value;
+		rhost = msg->via2->host;
+	} else {
+		if(msg->dst_uri.s==NULL || msg->dst_uri.len<=0) {
+			/* no destination uri - target is r-uri */
+			if(msg->parsed_uri_ok==0 /* R-URI not parsed*/
+					&& parse_sip_msg_uri(msg)<0) {
+				LM_ERR("failed to parse the R-URI\n");
+				return -1;
+			}
+			if(msg->parsed_uri.proto==PROTO_WSS
+					|| msg->parsed_uri.proto==PROTO_WS) {
+				/* going to ws/wss */
+				return 1;
+			}
+			return 0;
+		}
+		if(parse_uri(msg->dst_uri.s, msg->dst_uri.len, &pduri)!=0) {
+			LM_ERR("failed to parse dst uri [%.*s]\n",
+					msg->dst_uri.len, msg->dst_uri.s);
+			return -1;
+		}
+		if(pduri.proto==PROTO_WSS || pduri.proto==PROTO_WS) {
+			/* going to ws/wss */
+			return 1;
+		}
+		if(msg->parsed_uri_ok==0 /* R-URI not parsed*/
+				&& parse_sip_msg_uri(msg)<0) {
+			LM_ERR("failed to parse the R-URI\n");
+			return -1;
+		}
+		dport = GET_SIP_PORT(pduri.port_no, pduri.proto);
+		rport = GET_SIP_PORT(msg->parsed_uri.port_no, msg->parsed_uri.proto);
+		if(dport != rport) {
+			/* ports are different */
+			return 1;
+		}
+		dhost = pduri.host;
+		rhost = msg->parsed_uri.host;
+	}
+	if(dhost.s==NULL || dhost.len<=0) {
+		return 0;
+	}
+	dhostip = str2ipx(&dhost);
+	rhostip = str2ipx(&rhost);
+	if(dhostip==NULL && rhostip==NULL) {
+		/* both are hostnames - do str comparison */
+		if(rhost.s==NULL || rhost.len<=0) {
+			return 0;
+		}
+		if(rhost.len != dhost.len) {
+			/* different in length */
+			return 1;
+		}
+		if(memcmp(rhost.s, dhost.s, dhost.len)!=0) {
+			/* different in content */
+			return 1;
+		}
+		return 0;
+	}
+	if(dhostip==NULL || rhostip==NULL) {
+		/* different in content */
+		return 1;
+	}
+	if(ip_addr_cmp(dhostip, rhostip)) {
+		/* same ip addresses */
+		return 0;
+	}
+	/* different ip addresses */
+	return 1;
+}
+
 static int nat_uac_test(struct sip_msg *msg, int tests)
 {
 	/* return true if any of the NAT-UAC tests holds */
@@ -1558,6 +1719,13 @@ static int nat_uac_test(struct sip_msg *msg, int tests)
 	if((tests & NAT_UAC_TEST_SDP_CLINE) && (test_sdp_cline(msg) > 0))
 		return 1;
 
+	/**
+	* test if destination address is different than R-URI/2ndVia
+	* - ws/wss target is true
+	*/
+	if((tests & NAT_UAC_TEST_DEST) && (nh_test_destination(msg) > 0))
+		return 1;
+
 	/* no test succeeded */
 	return -1;
 }
@@ -1609,13 +1777,12 @@ static int is_rfc1918_f(struct sip_msg *msg, char *str1, char *str2)
 #define AOLDMEDPRT_LEN (sizeof(AOLDMEDPRT) - 1)
 
 
-/* replace ip addresses in SDP and return umber of replacements */
+/* replace ip addresses in SDP and return number of replacements */
 static inline int replace_sdp_ip(
-		struct sip_msg *msg, str *org_body, char *line, str *ip, int linelen)
+		struct sip_msg *msg, str *org_body, char *line, str *ip, int linelen, int can_omit)
 {
 	str body1, oldip, newip;
 	str body = *org_body;
-	unsigned hasreplaced = 0;
 	int pf, pf1 = 0;
 	str body2;
 	char *bodylimit = body.s + body.len;
@@ -1631,10 +1798,17 @@ static inline int replace_sdp_ip(
 	}
 	body1 = body;
 	for(;;) {
-		if(nh_extract_mediaip(&body1, &oldip, &pf, line, linelen) == -1)
+		ret = nh_extract_mediaip(&body1, &oldip, &pf, line, linelen);
+		if(ret == 0)
 			break;
-		if(pf != AF_INET) {
-			LM_ERR("not an IPv4 address in '%s' SDP\n", line);
+		if(ret == -1) {
+			if(can_omit) {
+				body2.s = body1.s + linelen;
+				body2.len = bodylimit - body2.s;
+				body1 = body2;
+				continue;
+			}
+			LM_ERR("no `IP[4|6]' in `%s' field\n", line);
 			return -1;
 		}
 		if(!pf1)
@@ -1652,12 +1826,7 @@ static inline int replace_sdp_ip(
 			return -1;
 		}
 		count += ret;
-		hasreplaced = 1;
 		body1 = body2;
-	}
-	if(!hasreplaced) {
-		LM_ERR("can't extract '%s' IP from the SDP\n", line);
-		return -1;
 	}
 
 	return count;
@@ -1737,15 +1906,14 @@ static int ki_fix_nated_sdp_ip(sip_msg_t *msg, int level, str *ip)
 	if(level & (FIX_MEDIP | FIX_ORGIP)) {
 
 		/* Iterate all a=rtcp and replace ips in them. rfc3605 */
-		ret = replace_sdp_ip(msg, &body, "a=rtcp", (ip && ip->len>0) ? ip : 0, 6);
+		ret = replace_sdp_ip(msg, &body, "a=rtcp", (ip && ip->len>0) ? ip : 0, 6, 1);
 		if(ret == -1)
-			LM_DBG("a=rtcp parameter does not exist. nothing to do.\n");
-		else 
-			count += ret;
+			return -1;
+		count += ret;
 
 		if(level & FIX_MEDIP) {
 			/* Iterate all c= and replace ips in them. */
-			ret = replace_sdp_ip(msg, &body, "c=", (ip && ip->len>0) ? ip : 0, 2);
+			ret = replace_sdp_ip(msg, &body, "c=", (ip && ip->len>0) ? ip : 0, 2, 0);
 			if(ret == -1)
 				return -1;
 			count += ret;
@@ -1753,7 +1921,7 @@ static int ki_fix_nated_sdp_ip(sip_msg_t *msg, int level, str *ip)
 
 		if(level & FIX_ORGIP) {
 			/* Iterate all o= and replace ips in them. */
-			ret = replace_sdp_ip(msg, &body, "o=",  (ip && ip->len>0) ? ip : 0, 2);
+			ret = replace_sdp_ip(msg, &body, "o=",  (ip && ip->len>0) ? ip : 0, 2, 0);
 			if(ret == -1)
 				return -1;
 			count += ret;
@@ -1800,7 +1968,7 @@ static int nh_extract_mediaip(str *body, str *mediaip, int *pf, char *line,
 		cp = cp1 + linelen;
 	}
 	if(cp1 == NULL)
-		return -1;
+		return 0;
 
 	mediaip->s = cp1 + linelen;
 	mediaip->len =
@@ -1835,7 +2003,6 @@ static int nh_extract_mediaip(str *body, str *mediaip, int *pf, char *line,
 		cp = eat_space_end(cp + len, mediaip->s + mediaip->len);
 	}
 	if(nextisip != 2 || mediaip->len == 0) {
-		LM_ERR("no `IP[4|6]' in `%s' field\n", line);
 		return -1;
 	}
 	return 1;
@@ -2139,7 +2306,7 @@ static void nh_timer(unsigned int ticks, void *timer_idx)
 		else
 			dst_uri = &c;
 
-		/* determin the destination */
+		/* determine the destination */
 		if(path.len && (flags & sipping_flag) != 0) {
 			/* send to first URI in path */
 			if(get_path_dst_uri(&path, &opt) < 0) {
@@ -2177,7 +2344,7 @@ static void nh_timer(unsigned int ticks, void *timer_idx)
 		if(curi.port_no == 0)
 			curi.port_no = SIP_PORT;
 		proto = curi.proto;
-		/* we sholud get rid of this resolve (to ofen and to slow); for the
+		/* we should get rid of this resolve (to often and to slow); for the
 		 * moment we are lucky since the curi is an IP -bogdan */
 		he = sip_resolvehost(&curi.host, &curi.port_no, &proto);
 		if(he == NULL) {
@@ -2745,8 +2912,13 @@ static sr_kemi_t sr_kemi_nathelper_exports[] = {
 			SR_KEMIP_NONE, SR_KEMIP_NONE, SR_KEMIP_NONE }
 	},
 	{ str_init("nathelper"), str_init("handle_ruri_alias"),
-		SR_KEMIP_INT, handle_ruri_alias,
+		SR_KEMIP_INT, ki_handle_ruri_alias,
 		{ SR_KEMIP_NONE, SR_KEMIP_NONE, SR_KEMIP_NONE,
+			SR_KEMIP_NONE, SR_KEMIP_NONE, SR_KEMIP_NONE }
+	},
+	{ str_init("nathelper"), str_init("handle_ruri_alias_mode"),
+		SR_KEMIP_INT, ki_handle_ruri_alias_mode,
+		{ SR_KEMIP_INT, SR_KEMIP_NONE, SR_KEMIP_NONE,
 			SR_KEMIP_NONE, SR_KEMIP_NONE, SR_KEMIP_NONE }
 	},
 	{ str_init("nathelper"), str_init("is_rfc1918"),

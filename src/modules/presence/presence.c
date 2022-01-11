@@ -166,6 +166,7 @@ int pres_retrieve_order = 0;
 str pres_retrieve_order_by = str_init("priority");
 int pres_enable_dmq = 0;
 int pres_delete_same_subs = 0;
+int pres_subs_respond_200 = 1;
 
 int pres_db_table_lock_type = 1;
 db_locking_t pres_db_table_lock = DB_LOCKING_WRITE;
@@ -232,7 +233,7 @@ static param_export_t params[]={
 	{ "fetch_rows",             INT_PARAM, &pres_fetch_rows},
 	{ "db_table_lock_type",     INT_PARAM, &pres_db_table_lock_type},
 	{ "local_log_level",        PARAM_INT, &pres_local_log_level},
-	{ "local_log_facility",     PARAM_STR, &pres_log_facility_str},
+	{ "local_log_facility",     PARAM_STRING, &pres_log_facility_str},
 	{ "subs_remove_match",      PARAM_INT, &pres_subs_remove_match},
 	{ "xavp_cfg",               PARAM_STR, &pres_xavp_cfg},
 	{ "retrieve_order",         PARAM_INT, &pres_retrieve_order},
@@ -243,6 +244,7 @@ static param_export_t params[]={
 	{ "pres_subs_mode",         PARAM_INT, &_pres_subs_mode},
 	{ "delete_same_subs",       PARAM_INT, &pres_delete_same_subs},
 	{ "timer_mode",             PARAM_INT, &pres_timer_mode},
+	{ "subs_respond_200",       PARAM_INT, &pres_subs_respond_200},
 
 	{0,0,0}
 };

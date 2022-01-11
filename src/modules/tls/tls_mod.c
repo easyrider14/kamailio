@@ -23,7 +23,7 @@
  * Module: @ref tls
  */
 
-
+#include <stdlib.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
@@ -40,6 +40,7 @@
 #include "../../core/rpc_lookup.h"
 #include "../../core/cfg/cfg.h"
 #include "../../core/dprint.h"
+#include "../../core/mod_fix.h"
 #include "../../core/kemi.h"
 #include "tls_init.h"
 #include "tls_server.h"
@@ -80,6 +81,7 @@ static int mod_child(int rank);
 static void destroy(void);
 
 static int w_is_peer_verified(struct sip_msg* msg, char* p1, char* p2);
+static int w_tls_set_connect_server_id(sip_msg_t* msg, char* psrvid, char* p2);
 
 int ksr_rand_engine_param(modparam_t type, void* val);
 
@@ -101,8 +103,9 @@ static tls_domain_t mod_params = {
 	0,                /* Verify certificate */
 	9,                /* Verify depth */
 	STR_STATIC_INIT(TLS_CA_FILE),      /* CA file */
+	STR_STATIC_INIT(TLS_CA_PATH),      /* CA path */
 	0,                /* Require certificate */
-	{0, },                /* Cipher list */
+	{0, 0},                /* Cipher list */
 	TLS_USE_TLSv1_PLUS,   /* TLS method */
 	STR_STATIC_INIT(TLS_CRL_FILE), /* Certificate revocation list */
 	{0, 0},           /* Server name (SNI) */
@@ -126,6 +129,7 @@ tls_domain_t srv_defaults = {
 	0,                /* Verify certificate */
 	9,                /* Verify depth */
 	STR_STATIC_INIT(TLS_CA_FILE),      /* CA file */
+	STR_STATIC_INIT(TLS_CA_PATH),      /* CA path */
 	0,                /* Require certificate */
 	{0, 0},                /* Cipher list */
 	TLS_USE_TLSv1_PLUS,    /* TLS method */
@@ -168,6 +172,7 @@ tls_domain_t cli_defaults = {
 	0,                /* Verify certificate */
 	9,                /* Verify depth */
 	STR_STATIC_INIT(TLS_CA_FILE),      /* CA file */
+	STR_STATIC_INIT(TLS_CA_PATH),      /* CA path */
 	0,                /* Require certificate */
 	{0, 0},                /* Cipher list */
 	TLS_USE_TLSv1_PLUS,    /* TLS method */
@@ -196,6 +201,8 @@ int sr_tls_renegotiation = 0;
 static cmd_export_t cmds[] = {
 	{"is_peer_verified", (cmd_function)w_is_peer_verified,   0, 0, 0,
 			REQUEST_ROUTE},
+	{"tls_set_connect_server_id", (cmd_function)w_tls_set_connect_server_id,
+		1, fixup_spve_null, fixup_free_spve_null, ANY_ROUTE},
 	{0,0,0,0,0,0}
 };
 
@@ -212,6 +219,7 @@ static param_export_t params[] = {
 	{"verify_client",       PARAM_STR,    &default_tls_cfg.verify_client},
 	{"private_key",         PARAM_STR,    &default_tls_cfg.private_key  },
 	{"ca_list",             PARAM_STR,    &default_tls_cfg.ca_list      },
+	{"ca_path",             PARAM_STR,    &default_tls_cfg.ca_path      },
 	{"certificate",         PARAM_STR,    &default_tls_cfg.certificate  },
 	{"crl",                 PARAM_STR,    &default_tls_cfg.crl          },
 	{"cipher_list",         PARAM_STR,    &default_tls_cfg.cipher_list  },
@@ -248,12 +256,15 @@ static param_export_t params[] = {
 	{0, 0, 0}
 };
 
+#ifndef MOD_NAME
+#define MOD_NAME "tls"
+#endif
 
 /*
  * Module interface
  */
 struct module_exports exports = {
-	"tls",           /* module name */
+	MOD_NAME,        /* module name */
 	DEFAULT_DLFLAGS, /* dlopen flags */
 	cmds,            /* exported functions */
 	params,          /* exported parameters */
@@ -546,6 +557,27 @@ static int w_is_peer_verified(struct sip_msg* msg, char* foo, char* foo2)
 	return ki_is_peer_verified(msg);
 }
 
+static int ki_tls_set_connect_server_id(sip_msg_t* msg, str* srvid)
+{
+	if(ksr_tls_set_connect_server_id(srvid)<0) {
+		return -1;
+	}
+
+	return 1;
+}
+
+static int w_tls_set_connect_server_id(sip_msg_t* msg, char* psrvid, char* p2)
+{
+	str ssrvid = STR_NULL;
+
+	if(fixup_get_svalue(msg, (gparam_t*)psrvid, &ssrvid)<0) {
+		LM_ERR("failed to get server id parameter\n");
+		return -1;
+	}
+
+	return ki_tls_set_connect_server_id(msg, &ssrvid);
+}
+
 /**
  *
  */
@@ -562,6 +594,11 @@ static sr_kemi_t sr_kemi_tls_exports[] = {
 	{ str_init("tls"), str_init("is_peer_verified"),
 		SR_KEMIP_INT, ki_is_peer_verified,
 		{ SR_KEMIP_NONE, SR_KEMIP_NONE, SR_KEMIP_NONE,
+			SR_KEMIP_NONE, SR_KEMIP_NONE, SR_KEMIP_NONE }
+	},
+	{ str_init("tls"), str_init("set_connect_server_id"),
+		SR_KEMIP_INT, ki_tls_set_connect_server_id,
+		{ SR_KEMIP_STR, SR_KEMIP_NONE, SR_KEMIP_NONE,
 			SR_KEMIP_NONE, SR_KEMIP_NONE, SR_KEMIP_NONE }
 	},
 	{ str_init("tls"), str_init("cget"),
@@ -614,39 +651,78 @@ int mod_register(char *path, int *dlflags, void *p1, void *p2)
  */
 static int tls_engine_init()
 {
-	LM_DBG("With OpenSSL engine support\n");
-	if (strncmp(tls_engine_settings.engine.s, "NONE", 4)) {
-		int err = 0;
-		ENGINE_load_builtin_engines();
-		OPENSSL_load_builtin_modules();
-		if (strncmp(tls_engine_settings.engine_config.s, "NONE", 4)) {
-			err = CONF_modules_load_file(tls_engine_settings.engine_config.s, "kamailio", 0);
-			if (!err) {
-				LM_ERR("OpenSSL failed to load ENGINE configuration file: %*s\n", tls_engine_settings.engine_config.len, tls_engine_settings.engine_config.s);
-				goto error;
-			}
-		}
-		ksr_tls_engine = ENGINE_by_id(tls_engine_settings.engine.s);
-		if (!ksr_tls_engine) {
-			LM_ERR("OpenSSL failed to obtain ENGINE: %*s\n", tls_engine_settings.engine_config.len, tls_engine_settings.engine_config.s);
-			goto error;
-		}
-		err = ENGINE_init(ksr_tls_engine);
-		if (!err) {
-			LM_ERR("OpenSSL ENGINE_init() failed\n");
-			goto error;
-		}
-		if (strncmp(tls_engine_settings.engine_algorithms.s, "NONE", 4)) {
-			err = ENGINE_set_default_string(ksr_tls_engine, tls_engine_settings.engine_algorithms.s);
-			if (!err) {
-				LM_ERR("OpenSSL ENGINE could not set algorithms\n");
-				goto error;
-			}
-		}
-		LM_INFO("OpenSSL engine %*s initialized\n", tls_engine_settings.engine.len, tls_engine_settings.engine.s);
+	char *err, *section, *engines_section, *engine_section;
+	char *engine_id;
+	int rc;
+	long errline;
+	CONF* config;
+	STACK_OF(CONF_VALUE) *stack;
+	CONF_VALUE *confval;
+	ENGINE *e;
+
+	LM_INFO("With OpenSSL engine support %*s\n", tls_engine_settings.engine_config.len, tls_engine_settings.engine_config.s);
+
+	/*
+	 * #2839: don't use CONF_modules_load_file():
+	 * We are in the child process and the global engine linked-list
+	 * is initialized in the parent.
+	 */
+	e  = ENGINE_by_id("dynamic");
+	if (!e) {
+		err = "Error loading dynamic engine";
+		goto error;
 	}
+	engine_id = tls_engine_settings.engine.s;
+
+	config = NCONF_new(NULL);
+	rc = NCONF_load(config, tls_engine_settings.engine_config.s, &errline);
+	if (!rc) {
+		err = "Error loading OpenSSL configuration file";
+		goto error;
+	}
+
+	section = NCONF_get_string(config, NULL, "kamailio");
+	engines_section = NCONF_get_string(config, section, "engines");
+	engine_section = NCONF_get_string(config, engines_section, engine_id);
+	stack = NCONF_get_section(config, engine_section);
+
+	if (!ENGINE_ctrl_cmd_string(e, "SO_PATH", NCONF_get_string(config, engine_section, "dynamic_path"), 0)) {
+		err = "SO_PATH";
+		goto error;
+	}
+	if (!ENGINE_ctrl_cmd_string(e, "ID", engine_id, 0)) {
+		err = "ID";
+		goto error;
+	}
+	if (!ENGINE_ctrl_cmd(e, "LOAD", 1, NULL, NULL, 0)) {
+		err = "LOAD";
+		goto error;
+	}
+	while((confval = sk_CONF_VALUE_pop(stack))) {
+		if (strcmp(confval->name, "dynamic_path") == 0) continue;
+		LM_DBG("Configuring OpenSSL engine %s: %s(%s)\n", engine_id, confval->name, confval->value);
+		if (!ENGINE_ctrl_cmd_string(e, confval->name, confval->value, 0)) {
+			err = confval->name;
+			goto error;
+		}
+	}
+
+	if (!ENGINE_init(e)) {
+		err = "ENGINE_init()";
+		goto error;
+	}
+	if (strncmp(tls_engine_settings.engine_algorithms.s, "NONE", 4)) {
+		rc = ENGINE_set_default_string(e, tls_engine_settings.engine_algorithms.s);
+		if (!rc) {
+			err = "OpenSSL ENGINE could not set algorithms";
+			goto error;
+		}
+	}
+	ENGINE_free(e);
+	ksr_tls_engine = e;
 	return 0;
 error:
+	LM_ERR("TLS Engine: %s\n", err);
 	return -1;
 }
 

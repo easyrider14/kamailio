@@ -1985,10 +1985,13 @@ kamcmd dlg.list_ctx
      * mkey - matching key. It can be: 'ruri' - match against R-URI of the
        dialog; 'furi' - match against From header URI of the dialog;
        'turi' - match against the To header URI of the dialog; 'callid' -
-       match against Call-Id value.
+       match against Call-Id value; 'start_ts' - match against start
+       timestamp.
      * mop - matching operator. It can be: 'eq' - match using string
        comparison; 're' - match using regular expression; 'sw' - match
-       using starts-with (prefix) comparison.
+       using starts-with (prefix) comparison; 'gt' - match using integer
+       greater comparison; 'lt' - match using integer lesser comparison.
+       Integer comparison can be used only with 'start_ts' key.
      * mval - matching value.
 
    RPC Command Format:
@@ -1996,6 +1999,8 @@ kamcmd dlg.list_ctx
 kamcmd dlg.list_match furi eq sip:alice@test.com 2
 ...
 kamcmd dlg.list_match furi sw sip:alice@
+...
+kamcmd dlg.list_match start_ts gt s:1641550904
 ...
 
 9.4. dlg.list_match_ctx
@@ -2198,7 +2203,10 @@ kamcmd dlg.bridge_dlg _from_ _to_ _op_
 
    Name: dlg.stats_active
 
-   Parameters: none.
+   Parameters:
+     * local_only (optional) - if not 0 then filter out non local dialogs
+       (the receiving socket is not found locally, from C code point of
+       view, the bind_addr info is not set).
 
    Returned fields
      * starting - initial INVITE has been processed, no ringing or 1xx has

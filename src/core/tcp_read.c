@@ -174,26 +174,6 @@ int tcp_http11_continue(struct tcp_connection *c)
 }
 #endif /* HTTP11 */
 
-static int tcp_emit_closed_event(struct tcp_connection *con, enum tcp_closed_reason reason)
-{
-	int ret;
-	tcp_closed_event_info_t tev;
-	sr_event_param_t evp = {0};
-
-	ret = 0;
-	LM_DBG("TCP closed event creation triggered (reason: %d)\n", reason);
-	if(likely(sr_event_enabled(SREV_TCP_CLOSED))) {
-		memset(&tev, 0, sizeof(tcp_closed_event_info_t));
-		tev.reason = reason;
-		tev.con = con;
-		evp.data = (void*)(&tev);
-		ret = sr_event_exec(SREV_TCP_CLOSED, &evp);
-	} else {
-		LM_DBG("no callback registering for handling TCP closed event\n");
-	}
-	return ret;
-}
-
 
 /** reads data from an existing tcp connection.
  * Side-effects: blocklisting, sets connection state to S_CONN_OK, tcp stats.
@@ -289,9 +269,9 @@ again:
 				LOG(cfg_get(core, core_cfg, corelog),"-> [%s]:%u)\n",
 						ip_addr2a(&c->rcv.dst_ip), c->rcv.dst_port);
 				if (errno == ETIMEDOUT) {
-					tcp_emit_closed_event(c, TCP_CLOSED_TIMEOUT);
+					c->event = TCP_CLOSED_TIMEOUT;
 				} else if (errno == ECONNRESET) {
-					tcp_emit_closed_event(c, TCP_CLOSED_RESET);
+					c->event = TCP_CLOSED_RESET;
 				}
 				return -1;
 			}
@@ -304,7 +284,7 @@ again:
 					ip_addr2a(&c->rcv.dst_ip), c->rcv.dst_port);
 			c->state=S_CONN_EOF;
 			*flags|=RD_CONN_EOF;
-			tcp_emit_closed_event(c, TCP_CLOSED_EOF);
+			c->event=TCP_CLOSED_EOF;
 		}else{
 			if (unlikely(c->state==S_CONN_CONNECT || c->state==S_CONN_ACCEPT)){
 				TCP_STATS_ESTABLISHED(c->state);
@@ -1696,6 +1676,7 @@ static ticks_t tcpconn_read_timeout(ticks_t t, struct timer_ln* tl, void* data)
 	}
 	if(tcp_conn_lst!=NULL) {
 		tcpconn_listrm(tcp_conn_lst, c, c_next, c_prev);
+		c->event = TCP_CLOSED_TIMEOUT;
 		release_tcpconn(c, (c->state<0)?CONN_ERROR:CONN_RELEASE, tcpmain_sock);
 	}
 	return 0;

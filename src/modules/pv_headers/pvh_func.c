@@ -174,6 +174,10 @@ int pvh_apply_headers(struct sip_msg *msg)
 		return -1;
 	}
 	keys_count = pvh_xavi_keys_count(&sub);
+	if(keys_count <= 0) {
+		LM_ERR("no keys found: %.*s\n", xavi_name.len, xavi_name.s);
+		return -1;
+	}
 	if(str_hash_alloc(&rm_hdrs, keys_count) < 0) {
 		PKG_MEM_ERROR;
 		return -1;
@@ -272,12 +276,6 @@ int pvh_apply_headers(struct sip_msg *msg)
 		}
 
 		if(!str_hash_case_get(&rm_hdrs, sub->name.s, sub->name.len)) {
-			if(!pvh_avp_is_null(sub) && xavi_count(&sub->name, &sub) == 1) {
-				LM_DBG("replace header[%s]: %s\n", sub->name.s, sub->val.v.s.s);
-				pvh_real_hdr_replace(msg, &sub->name, &sub->val.v.s);
-				pvh_str_hash_add_key(&rm_hdrs, &sub->name);
-				continue;
-			}
 			LM_DBG("remove header[%s]: %s\n", sub->name.s, sub->val.v.s.s);
 			pvh_real_hdr_del_by_name(msg, &sub->name);
 			pvh_str_hash_add_key(&rm_hdrs, &sub->name);
@@ -294,7 +292,7 @@ int pvh_apply_headers(struct sip_msg *msg)
 	res = 1;
 
 err:
-	if(rm_hdrs.size)
+	if(rm_hdrs.table)
 		pvh_str_hash_free(&rm_hdrs);
 	return res;
 }

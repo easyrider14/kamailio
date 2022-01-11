@@ -169,8 +169,8 @@ Options:\n\
                   default is yes.\n\
     -A define    Add config pre-processor define (e.g., -A WITH_AUTH,\n\
                   -A 'FLT_ACC=1', -A 'DEFVAL=\"str-val\"')\n\
-    -b nr        Maximum receive buffer size which will not be exceeded by\n\
-                  auto-probing procedure even if  OS allows\n\
+    -b nr        Maximum OS UDP receive buffer size which will not be exceeded by\n\
+                  auto-probing-and-increase procedure even if OS allows\n\
     -c           Check configuration file for syntax errors\n\
     --cfg-print  Print configuration file evaluating includes and ifdefs\n\
     -d           Debugging level control (multiple -d to increase the level from 0)\n\
@@ -293,22 +293,6 @@ void print_internals(void)
 	printf("Thank you for flying %s!\n", NAME);
 }
 
-/* debugging function */
-/*
-void receive_stdin_loop(void)
-{
-	#define BSIZE 1024
-	char buf[BSIZE+1];
-	int len;
-
-	while(1){
-		len=fread(buf,1,BSIZE,stdin);
-		buf[len+1]=0;
-		receive_msg(buf, len);
-		printf("-------------------------\n");
-	}
-}
-*/
 
 /* global vars */
 
@@ -323,7 +307,7 @@ unsigned int maxbuffer = MAX_RECV_BUFFER_SIZE; /* maximum buffer size we do
 												  not want to exceed during the
 												  auto-probing procedure; may
 												  be re-configured */
-unsigned int sql_buffer_size = 65535; /* Size for the SQL buffer. Defaults to 64k. 
+unsigned int sql_buffer_size = 65535; /* Size for the SQL buffer. Defaults to 64k.
                                          This may be re-configured */
 int socket_workers = 0;		/* number of workers processing requests for a socket
 							   - it's reset everytime with a new listen socket */
@@ -358,9 +342,11 @@ int dont_fork = 0;
 int dont_daemonize = 0;
 int log_stderr = 0;
 int log_color = 0;
+int log_cee = 0;
 /* set custom app name for syslog printing */
 char *log_name = 0;
 char *log_prefix_fmt = 0;
+char *log_fqdn = 0;
 pid_t creator_pid = (pid_t) -1;
 int config_check = 0;
 /* check if reply first via host==us */
@@ -522,7 +508,7 @@ extern FILE* yyin;
 extern int yyparse(void);
 
 
-int is_main=1; /* flag = is this the  "main" process? */
+int _ksr_is_main=1; /* flag = is this the  "main" process? */
 int fixup_complete=0; /* flag = is the fixup complete ? */
 
 char* pid_file = 0; /* filename as asked by use */
@@ -663,7 +649,7 @@ static void kill_all_children(int signum)
 		  * (only main can add processes, so from main is safe not to lock
 		  *  and moreover it avoids the lock-holding suicidal children problem)
 		  */
-		if (!is_main) lock_get(process_lock);
+		if (!_ksr_is_main) lock_get(process_lock);
 		for (r=1; r<*process_count; r++){
 			if (r==process_no) continue; /* try not to be suicidal */
 			if (pt[r].pid) {
@@ -672,7 +658,7 @@ static void kill_all_children(int signum)
 			else LM_CRIT("killing: %s > %d no pid!!!\n",
 							pt[r].desc, pt[r].pid);
 		}
-		if (!is_main) lock_release(process_lock);
+		if (!_ksr_is_main) lock_release(process_lock);
 	}
 }
 
@@ -846,7 +832,7 @@ void sig_usr(int signo)
 #endif
 #endif
 
-	if (is_main){
+	if (_ksr_is_main){
 		if (sig_flag==0) sig_flag=signo;
 		else /*  previous sig. not processed yet, ignoring? */
 			return; ;
@@ -1260,14 +1246,15 @@ static struct name_lst* parse_phostport_mh(char* s, char** host, int* hlen,
 
 
 
-/** Update \c cfg_file variable to contain full pathname. The function updates
+/** Update \c cfg_file variable to contain full pathname or '-' (for stdin)
+ * allocated in system memory. The function updates
  * the value of \c cfg_file global variable to contain full absolute pathname
- * to the main configuration file of SER. The function uses CFG_FILE macro to
+ * to the main configuration file. The function uses CFG_FILE macro to
  * determine the default path to the configuration file if the user did not
  * specify one using the command line option. If \c cfg_file contains an
- * absolute pathname then it is used unmodified, if it contains a relative
+ * absolute pathname then it is cloned unmodified, if it contains a relative
  * pathanme than the value returned by \c getcwd function will be added at the
- * beginning. This function must be run before SER changes its current working
+ * beginning. This function must be run before changing its current working
  * directory to / (in daemon mode).
  * @return Zero on success, negative number
  * on error.
@@ -1276,34 +1263,55 @@ int fix_cfg_file(void)
 {
 	char* res = NULL;
 	size_t max_len, cwd_len, cfg_len;
-	
+
 	if (cfg_file == NULL) cfg_file = CFG_FILE;
-	if (cfg_file[0] == '/') return 0;
-	if (cfg_file[0] == '-' && strlen(cfg_file)==1) return 0;
-	
+	if (cfg_file[0] == '/') {
+		cfg_len = strlen(cfg_file);
+		if(cfg_len < 2) {
+			/* do not accept only '/' */
+			fprintf(stderr, "ERROR: invalid cfg file value\n");
+			return -1;
+		}
+		if ((res = malloc(cfg_len + 1)) == NULL) goto error;
+		memcpy(res, cfg_file, cfg_len);
+		res[cfg_len] = 0;
+		cfg_file = res;
+		return 0;
+	}
+	if (cfg_file[0] == '-') {
+		cfg_len = strlen(cfg_file);
+		if(cfg_len == 1) {
+			if ((res = malloc(2)) == NULL) goto error;
+			res[0] = '-';
+			res[1] = '\0';
+			cfg_file = res;
+			return 0;
+		}
+	}
+
 	/* cfg_file contains a relative pathname, get the current
 	 * working directory and add it at the beginning
 	 */
 	cfg_len = strlen(cfg_file);
-	
+
 	max_len = pathmax();
 	if ((res = malloc(max_len)) == NULL) goto error;
-	
+
 	if (getcwd(res, max_len) == NULL) goto error;
 	cwd_len = strlen(res);
-	
+
 	/* Make sure that the buffer is big enough */
 	if (cwd_len + 1 + cfg_len >= max_len) goto error;
-	
+
 	res[cwd_len] = '/';
 	memcpy(res + cwd_len + 1, cfg_file, cfg_len);
-	
+
 	res[cwd_len + 1 + cfg_len] = '\0'; /* Add terminating zero */
 	cfg_file = res;
 	return 0;
-	
+
  error:
-	fprintf(stderr, "ERROR: Unable to fix cfg_file to contain full pathname\n");
+	fprintf(stderr, "ERROR: Unable to fix cfg file to contain full pathname\n");
 	if (res) free(res);
 	return -1;
 }
@@ -1490,6 +1498,12 @@ int main_loop(void)
 			LM_ERR("init_child failed\n");
 			goto error;
 		}
+
+		if (init_child(PROC_POSTCHILDINIT) < 0) {
+			LM_ERR("error in init_child for rank PROC_POSTCHILDINIT\n");
+			goto error;
+		}
+
 		*_sr_instance_started = 1;
 		return udp_rcv_loop();
 	}else{ /* fork: */
@@ -1856,6 +1870,11 @@ int main_loop(void)
 			unix_tcp_sock=-1;
 		}
 #endif
+		if (init_child(PROC_POSTCHILDINIT) < 0) {
+			LM_ERR("error in init_child for rank PROC_POSTCHILDINIT\n");
+			goto error;
+		}
+
 		/* init cfg, but without per child callbacks support */
 		cfg_child_no_cb_init();
 		cfg_ok=1;
@@ -2002,6 +2021,25 @@ int main(int argc, char** argv)
 		{0, 0, 0, 0 }
 	};
 
+	if (argc > 1) {
+		/* checks for common wrong arguments */
+		if(strcasecmp(argv[1], "start")==0) {
+			fprintf(stderr, "error: 'start' is not a supported argument\n");
+			fprintf(stderr, "error: stopping " NAME " ...\n\n");
+			exit(-1);
+		}
+		if(strcasecmp(argv[1], "stop")==0) {
+			fprintf(stderr, "error: 'stop' is not a supported argument\n");
+			fprintf(stderr, "error: stopping " NAME " ...\n\n");
+			exit(-1);
+		}
+		if(strcasecmp(argv[1], "restart")==0) {
+			fprintf(stderr, "error: 'restart' is not a supported argument\n");
+			fprintf(stderr, "error: stopping " NAME " ...\n\n");
+			exit(-1);
+		}
+	}
+
 	/*init*/
 	time(&up_since);
 	creator_pid = getpid();
@@ -2014,7 +2052,7 @@ int main(int argc, char** argv)
 	sr_cfgenv_init();
 	daemon_status_init();
 
-	dprint_init_colors();
+	log_init();
 
 	/* command line options */
 	options=  ":f:cm:M:dVIhEeb:l:L:n:vKrRDTN:W:w:t:u:g:P:G:SQ:O:a:A:x:X:Y:";
@@ -2073,6 +2111,10 @@ int main(int argc, char** argv)
 					ksr_cfg_print_mode = 1;
 					break;
 			case KARGOPTVAL+10:
+					if (optarg == NULL) {
+						fprintf(stderr, "bad atexit value\n");
+						goto error;
+					}
 					if(optarg[0]=='y' || optarg[0]=='1') {
 						ksr_atexit_mode = 1;
 					} else if(optarg[0]=='n' || optarg[0]=='0') {
@@ -2140,6 +2182,10 @@ int main(int argc, char** argv)
 					/* ignore, they were parsed immediately after startup */
 					break;
 			case 'f':
+					if (optarg == NULL) {
+						fprintf(stderr, "bad -f parameter\n");
+						goto error;
+					}
 					cfg_file=optarg;
 					break;
 			case 'c':
@@ -2147,10 +2193,18 @@ int main(int argc, char** argv)
 					log_stderr=1; /* force stderr logging */
 					break;
 			case 'L':
+					if (optarg == NULL) {
+						fprintf(stderr, "bad -L parameter\n");
+						goto error;
+					}
 					mods_dir = optarg;
 					mods_dir_cmd = 1;
 					break;
 			case 'm':
+					if (optarg == NULL) {
+						fprintf(stderr, "bad shared mem size\n");
+						goto error;
+					}
 					shm_mem_size=strtol(optarg, &tmp, 10) * 1024 * 1024;
 					if (tmp &&(*tmp)){
 						fprintf(stderr, "bad shmem size number: -m %s\n",
@@ -2188,6 +2242,10 @@ int main(int argc, char** argv)
 					/* ignore it, was parsed immediately after startup */
 					break;
 			case 'O':
+					if (optarg == NULL) {
+						fprintf(stderr, "bad -O parameter\n");
+						goto error;
+					}
 					scr_opt_lev=strtol(optarg, &tmp, 10);
 					if (tmp &&(*tmp)){
 						fprintf(stderr, "bad optimization level: -O %s\n",
@@ -2196,24 +2254,33 @@ int main(int argc, char** argv)
 					};
 					break;
 			case 'u':
+					if (optarg == NULL) {
+						fprintf(stderr, "bad -u parameter\n");
+						goto error;
+					}
 					/* user needed for possible shm. pre-init */
 					user=optarg;
 					break;
 			case 'A':
+					if (optarg == NULL) {
+						fprintf(stderr, "bad -A parameter\n");
+						goto error;
+					}
 					p = strchr(optarg, '=');
 					if(p) {
-						*p = '\0';
+						tmp_len = p - optarg;
+					} else {
+						tmp_len = strlen(optarg);
 					}
 					pp_define_set_type(0);
-					if(pp_define(strlen(optarg), optarg)<0) {
+					if(pp_define(tmp_len, optarg)<0) {
 						fprintf(stderr, "error at define param: -A %s\n",
 								optarg);
 						goto error;
 					}
 					if(p) {
-						*p = '=';
 						p++;
-						if(pp_define_set(strlen(p), p)<0) {
+						if(pp_define_set(strlen(p), p, KSR_PPDEF_NORMAL)<0) {
 							fprintf(stderr, "error at define value: -A %s\n",
 								optarg);
 							goto error;
@@ -2250,6 +2317,10 @@ int main(int argc, char** argv)
 
 			/* long options */
 			case KARGOPTVAL:
+					if (optarg == NULL) {
+						fprintf(stderr, "bad alias parameter\n");
+						goto error;
+					}
 					if(parse_phostport(optarg, &tmp, &tmp_len,
 											&port, &proto)!=0) {
 						fprintf(stderr, "Invalid alias value '%s'\n", optarg);
@@ -2261,24 +2332,40 @@ int main(int argc, char** argv)
 					}
 					break;
 			case KARGOPTVAL+1:
+					if (optarg == NULL) {
+						fprintf(stderr, "bad subst parameter\n");
+						goto error;
+					}
 					if(pp_subst_add(optarg)<0) {
 						LM_ERR("failed to add subst expression: %s\n", optarg);
 						goto error;
 					}
 					break;
 			case KARGOPTVAL+2:
-					if(pp_substdef_add(optarg, 0)<0) {
+					if (optarg == NULL) {
+						fprintf(stderr, "bad substdef parameter\n");
+						goto error;
+					}
+					if(pp_substdef_add(optarg, KSR_PPDEF_NORMAL)<0) {
 						LM_ERR("failed to add substdef expression: %s\n", optarg);
 						goto error;
 					}
 					break;
 			case KARGOPTVAL+3:
-					if(pp_substdef_add(optarg, 1)<0) {
+					if (optarg == NULL) {
+						fprintf(stderr, "bad substdefs parameter\n");
+						goto error;
+					}
+					if(pp_substdef_add(optarg, KSR_PPDEF_QUOTED)<0) {
 						LM_ERR("failed to add substdefs expression: %s\n", optarg);
 						goto error;
 					}
 					break;
 			case KARGOPTVAL+4:
+					if (optarg == NULL) {
+						fprintf(stderr, "bad server if parameter\n");
+						goto error;
+					}
 					server_id=(int)strtol(optarg, &tmp, 10);
 					if ((tmp==0) || (*tmp)){
 						LM_ERR("bad server_id value: %s\n", optarg);
@@ -2340,12 +2427,20 @@ int main(int argc, char** argv)
 	while((c=getopt_long(argc, argv, options, long_options, &option_index))!=-1) {
 		switch(c) {
 			case KARGOPTVAL+5:
+					if (optarg == NULL) {
+						fprintf(stderr, "bad load module parameter\n");
+						goto error;
+					}
 					if (load_module(optarg)!=0) {
 						LM_ERR("failed to load the module: %s\n", optarg);
 						goto error;
 					}
 					break;
 			case KARGOPTVAL+6:
+					if (optarg == NULL) {
+						fprintf(stderr, "bad modparam parameter\n");
+						goto error;
+					}
 					if(set_mod_param_serialized(optarg) < 0) {
 						LM_ERR("failed to set modparam: %s\n", optarg);
 						goto error;
@@ -2450,6 +2545,10 @@ try_again:
 									   takes priority over config */
 					break;
 			case 'b':
+					if (optarg == NULL) {
+						fprintf(stderr, "bad -b parameter\n");
+						goto error;
+					}
 					maxbuffer=strtol(optarg, &tmp, 10);
 					if (tmp &&(*tmp)){
 						fprintf(stderr, "bad max buffer size number: -b %s\n",
@@ -2472,6 +2571,10 @@ try_again:
 				#endif
 					break;
 			case 'l':
+					if (optarg == NULL) {
+						fprintf(stderr, "bad -l parameter\n");
+						goto error;
+					}
 					p = strrchr(optarg, '/');
 					if(p==NULL) {
 						p = optarg;
@@ -2521,6 +2624,10 @@ try_again:
 					free_name_lst(n_lst);
 					break;
 			case 'n':
+					if (optarg == NULL) {
+						fprintf(stderr, "bad -n parameter\n");
+						goto error;
+					}
 					children_no=strtol(optarg, &tmp, 10);
 					if ((tmp==0) ||(*tmp)){
 						fprintf(stderr, "bad process number: -n %s\n",
@@ -2547,6 +2654,10 @@ try_again:
  									"TCP support disabled\n", optarg);
 						goto error;
 					}
+					if (optarg == NULL) {
+						fprintf(stderr, "bad -N parameter\n");
+						goto error;
+					}
 					tcp_cfg_children_no=strtol(optarg, &tmp, 10);
 					if ((tmp==0) ||(*tmp)){
 						fprintf(stderr, "bad process number: -N %s\n",
@@ -2559,6 +2670,10 @@ try_again:
 					break;
 			case 'W':
 				#ifdef USE_TCP
+					if (optarg == NULL) {
+						fprintf(stderr, "bad -W parameter\n");
+						goto error;
+					}
 					tcp_poll_method=get_poll_type(optarg);
 					if (tcp_poll_method==POLL_NONE){
 						fprintf(stderr, "bad poll method name: -W %s\ntry "
@@ -2574,6 +2689,10 @@ try_again:
 					if (sctp_disable) {
 						fprintf(stderr, "could not configure SCTP children: -Q %s\n"
 									"SCTP support disabled\n", optarg);
+						goto error;
+					}
+					if (optarg == NULL) {
+						fprintf(stderr, "bad -Q parameter\n");
 						goto error;
 					}
 					sctp_children_no=strtol(optarg, &tmp, 10);
@@ -2951,7 +3070,7 @@ try_again:
 	if (ret < 0)
 		goto error;
 	/*kill everything*/
-	if (is_main) shutdown_children(SIGTERM, 0);
+	if (_ksr_is_main) shutdown_children(SIGTERM, 0);
 	if (!dont_daemonize) {
 		if (daemon_status_send(0) < 0)
 			fprintf(stderr, "error sending exit status: %s [%d]\n",
@@ -2962,7 +3081,7 @@ try_again:
 
 error:
 	/*kill everything*/
-	if (is_main) shutdown_children(SIGTERM, 0);
+	if (_ksr_is_main) shutdown_children(SIGTERM, 0);
 	if (!dont_daemonize) {
 		if (daemon_status_send((char)-1) < 0)
 			fprintf(stderr, "error sending exit status: %s [%d]\n",

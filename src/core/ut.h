@@ -627,70 +627,127 @@ static inline void strlower(str* _s)
 	}
 }
 
+#define str2unval(_s, _r, _vtype, _vmax) do { \
+		_vtype limitmul; \
+		int i, c, limitrst; \
+		if((_s == NULL) || (_r == NULL) || (_s->len < 0) || (_s->s == NULL)) { \
+			return -1; \
+		} \
+		*_r = 0; \
+		i = 0; \
+		if (_s->s[0] == '+') { \
+			i++; \
+		} \
+		limitmul = _vmax / 10; \
+		limitrst = _vmax % 10; \
+		for(; i < _s->len; i++) { \
+			c = (unsigned char)_s->s[i]; \
+			if (c < '0' || c > '9') { \
+				return -1; \
+			} \
+			c -= '0'; \
+			if (*_r > limitmul || (*_r == limitmul && c > limitrst)) { \
+				*_r = _vmax; \
+				return -1; \
+			} else { \
+				*_r *= 10; \
+				*_r += c; \
+			} \
+		} \
+		return 0; \
+	} while(0)
+
 
 /*
- * Convert a str into integer
+ * Convert an str to unsigned long
+ */
+static inline int str2ulong(str* _s, unsigned long* _r)
+{
+	str2unval(_s, _r, long, ULONG_MAX);
+}
+
+/*
+ * Convert an str to unsigned integer
  */
 static inline int str2int(str* _s, unsigned int* _r)
 {
-	int i;
-
-	if (_r == NULL) return -1;
-	*_r = 0;
-	if (_s == NULL) return -1;
-	if (_s->len < 0) return -1;
-	if (_s->s == NULL) return -1;
-
-	for(i = 0; i < _s->len; i++) {
-		if ((_s->s[i] >= '0') && (_s->s[i] <= '9')) {
-			*_r *= 10;
-			*_r += _s->s[i] - '0';
-		} else {
-			return -1;
-		}
-	}
-
-	return 0;
+	str2unval(_s, _r, int, UINT_MAX);
 }
+
+
+#define str2snval(_s, _r, _vtype, _vmin, _vmax) do { \
+		_vtype limitmul; \
+		int i, c, neg, limitrst; \
+		if((_s == NULL) || (_r == NULL) || (_s->len < 0) || (_s->s == NULL)) { \
+			return -1; \
+		} \
+		*_r = 0; \
+		neg = 0; \
+		i = 0; \
+		if (_s->s[0] == '+') { \
+			i++; \
+		} else if (_s->s[0] == '-') { \
+			neg = 1; \
+			i++; \
+		} \
+		limitmul = neg ? _vmin : _vmax; \
+		limitrst = limitmul % 10; \
+		limitmul /= 10; \
+		if (neg) { \
+			if (limitrst > 0) { \
+				limitrst -= 10; \
+				limitmul += 1; \
+			} \
+			limitrst = -limitrst; \
+		} \
+		for(; i < _s->len; i++) { \
+			c = (unsigned char)_s->s[i]; \
+			if (c < '0' || c > '9') { \
+				return -1; \
+			} \
+			c -= '0'; \
+			if (neg) { \
+				if (*_r < limitmul || (*_r == limitmul && c > limitrst)) { \
+					*_r = _vmin; \
+					return -1; \
+				} else { \
+					*_r *= 10; \
+					*_r -= c; \
+				} \
+			} else { \
+				if (*_r > limitmul || (*_r == limitmul && c > limitrst)) { \
+					*_r = _vmax; \
+					return -1; \
+				} else { \
+					*_r *= 10; \
+					*_r += c; \
+				} \
+			} \
+		} \
+		return 0; \
+	} while(0)
+
+
+/*
+ * Convert an str to signed long
+ */
+static inline int str2slong(str* _s, long* _r)
+{
+	str2snval(_s, _r, long, LONG_MIN, LONG_MAX);
+}
+
 
 /*
  * Convert an str to signed integer
  */
 static inline int str2sint(str* _s, int* _r)
 {
-	int i;
-	int sign;
-
-	if (_s == NULL) return -1;
-	if (_r == NULL) return -1;
-	if (_s->len < 0) return -1;
-	if (_s->s == NULL) return -1;
-
-	*_r = 0;
-	sign = 1;
-	i = 0;
-	if (_s->s[0] == '+') {
-		i++;
-	} else if (_s->s[0] == '-') {
-		sign = -1;
-		i++;
-	}
-	for(; i < _s->len; i++) {
-		if ((_s->s[i] >= '0') && (_s->s[i] <= '9')) {
-			*_r *= 10;
-			*_r += _s->s[i] - '0';
-		} else {
-			return -1;
-		}
-	}
-	*_r *= sign;
-
-	return 0;
+	str2snval(_s, _r, int, INT_MIN, INT_MAX);
 }
 
 
 /*
- * Convert a str into integer
+ * Convert an strz to integer
  */
 static inline int strz2int(char* _s, unsigned int* _r)
 {
@@ -713,7 +770,7 @@ static inline int strz2int(char* _s, unsigned int* _r)
 }
 
 /*
- * Convert an str to signed integer
+ * Convert an strz to signed integer
  */
 static inline int strz2sint(char* _s, int* _r)
 {
@@ -1046,6 +1103,9 @@ time_t local2utc(time_t in);
 /* Convert time_t value in UTC to to value relative to local time zone */
 time_t utc2local(time_t in);
 
+/* Portable clock_gettime() */
+int ksr_clock_gettime(struct timespec *ts);
+
 /*
  * Return str as zero terminated string allocated
  * using pkg_malloc
@@ -1087,6 +1147,10 @@ char *str_casesearch(str *text, str *needle);
 char *strz_casesearch_strz(char *textz, char *needlez);
 
 char *str_casesearch_strz(str *text, char *needlez);
+
+char *str_rsearch(str *text, str *needle);
+
+char *str_rcasesearch(str *text, str *needle);
 
 /*
  * ser_memmem() returns the location of the first occurrence of data

@@ -39,11 +39,15 @@ int secsipid_proc_bind(secsipid_papi_t *papi)
 {
 	papi->SecSIPIDSignJSONHP = SecSIPIDSignJSONHP;
 	papi->SecSIPIDGetIdentity = SecSIPIDGetIdentity;
+	papi->SecSIPIDGetIdentityPrvKey = SecSIPIDGetIdentityPrvKey;
 	papi->SecSIPIDCheck = SecSIPIDCheck;
 	papi->SecSIPIDCheckFull = SecSIPIDCheckFull;
 	papi->SecSIPIDCheckFullPubKey = SecSIPIDCheckFullPubKey;
 	papi->SecSIPIDSetFileCacheOptions = SecSIPIDSetFileCacheOptions;
 	papi->SecSIPIDGetURLContent = SecSIPIDGetURLContent;
+	papi->SecSIPIDOptSetS = SecSIPIDOptSetS;
+	papi->SecSIPIDOptSetN = SecSIPIDOptSetN;
+	papi->SecSIPIDOptSetV = SecSIPIDOptSetV;
 
 	return 0;
 }

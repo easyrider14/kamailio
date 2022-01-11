@@ -106,7 +106,7 @@ static sr_xavp_t *xavp_new_value(str *name, sr_xval_t *val)
 	int size;
 	unsigned int id;
 
-	if(name==NULL || name->s==NULL || val==NULL)
+	if(name==NULL || name->s==NULL || name->len<=0 || val==NULL)
 		return NULL;
 	id = get_hash1_raw(name->s, name->len);
 
@@ -427,7 +427,7 @@ static int xavp_rm_internal(str *name, sr_xavp_t **head, int idx)
 	int n=0;
 	int count=0;
 
-	if(name==NULL || name->s==NULL)
+	if(name==NULL || name->s==NULL || name->len<=0)
 		return 0;
 
 	id = get_hash1_raw(name->s, name->len);
@@ -498,7 +498,7 @@ int xavp_count(str *name, sr_xavp_t **start)
 	unsigned int id;
 	int n = 0;
 
-	if(name==NULL || name->s==NULL)
+	if(name==NULL || name->s==NULL || name->len<=0)
 		return -1;
 	id = get_hash1_raw(name->s, name->len);
 
@@ -865,7 +865,7 @@ sr_xavp_t *xavp_extract(str *name, sr_xavp_t **list)
 	sr_xavp_t *prv = 0;
 	unsigned int id;
 
-	if(name==NULL || name->s==NULL) {
+	if(name==NULL || name->s==NULL || name->len<=0) {
 		if(list!=NULL) {
 			avp = *list;
 			if(avp!=NULL) {
@@ -1157,7 +1157,7 @@ static sr_xavp_t *xavu_get_internal(str *name, sr_xavp_t **list, sr_xavp_t **prv
 	sr_xavp_t *avu;
 	unsigned int id;
 
-	if(name==NULL || name->s==NULL) {
+	if(name==NULL || name->s==NULL || name->len<=0) {
 		return NULL;
 	}
 
@@ -1235,7 +1235,7 @@ int xavu_rm_by_name(str *name, sr_xavp_t **head)
 	unsigned int id;
 
 
-	if(name==NULL || name->s==NULL) {
+	if(name==NULL || name->s==NULL || name->len<=0) {
 		return -1;
 	}
 
@@ -1449,6 +1449,56 @@ sr_xavp_t *xavu_set_child_sval(str *rname, str *cname, str *sval)
 }
 
 /**
+ * return child node of an xavp
+ * - $xavu(rname=>cname)
+ */
+sr_xavp_t* xavu_get_child(str *rname, str *cname)
+{
+	sr_xavp_t *ravp=NULL;
+
+	ravp = xavu_get(rname, NULL);
+	if(ravp==NULL || ravp->val.type!=SR_XTYPE_XAVP)
+		return NULL;
+
+	return xavu_get(cname, ravp->val.v.xavp);
+}
+
+
+/**
+ * return child node of an xavp if it has int value
+ * - $xavu(rname=>cname)
+ */
+sr_xavp_t* xavu_get_child_with_ival(str *rname, str *cname)
+{
+	sr_xavp_t *vavp=NULL;
+
+	vavp = xavu_get_child(rname, cname);
+
+	if(vavp==NULL || vavp->val.type!=SR_XTYPE_INT)
+		return NULL;
+
+	return vavp;
+}
+
+
+/**
+ * return child node of an xavp if it has string value
+ * - $xavu(rname=>cname)
+ */
+sr_xavp_t* xavu_get_child_with_sval(str *rname, str *cname)
+{
+	sr_xavp_t *vavp=NULL;
+
+	vavp = xavu_get_child(rname, cname);
+
+	if(vavp==NULL || vavp->val.type!=SR_XTYPE_STR)
+		return NULL;
+
+	return vavp;
+}
+
+
+/**
  * serialize the values in subfields of an xavu in name=value; format
  * - rname - name of the root list xavu
  * - obuf - buffer were to write the output
@@ -1529,7 +1579,7 @@ static sr_xavp_t *xavi_new_value(str *name, sr_xval_t *val)
 	int size;
 	unsigned int id;
 
-	if(name==NULL || name->s==NULL || val==NULL)
+	if(name==NULL || name->s==NULL || name->len<=0 || val==NULL)
 		return NULL;
 	id = get_hash1_case_raw(name->s, name->len);
 
@@ -1762,7 +1812,7 @@ static sr_xavp_t *xavi_get_internal(str *name, sr_xavp_t **list, int idx, sr_xav
 	unsigned int id;
 	int n = 0;
 
-	if(name==NULL || name->s==NULL)
+	if(name==NULL || name->s==NULL || name->len<=0)
 		return NULL;
 	id = get_hash1_case_raw(name->s, name->len);
 
@@ -1889,7 +1939,7 @@ static int xavi_rm_internal(str *name, sr_xavp_t **head, int idx)
 	int n=0;
 	int count=0;
 
-	if(name==NULL || name->s==NULL)
+	if(name==NULL || name->s==NULL || name->len<=0)
 		return 0;
 
 	id = get_hash1_case_raw(name->s, name->len);
@@ -1972,7 +2022,7 @@ int xavi_count(str *name, sr_xavp_t **start)
 	unsigned int id;
 	int n = 0;
 
-	if(name==NULL || name->s==NULL)
+	if(name==NULL || name->s==NULL || name->len<=0)
 		return -1;
 	id = get_hash1_case_raw(name->s, name->len);
 
@@ -2265,7 +2315,7 @@ sr_xavp_t *xavi_extract(str *name, sr_xavp_t **list)
 	sr_xavp_t *prv = 0;
 	unsigned int id;
 
-	if(name==NULL || name->s==NULL) {
+	if(name==NULL || name->s==NULL || name->len<=0) {
 		if(list!=NULL) {
 			avi = *list;
 			if(avi!=NULL) {

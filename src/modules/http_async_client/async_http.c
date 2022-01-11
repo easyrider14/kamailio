@@ -48,6 +48,7 @@
 #include "../../core/receive.h"
 #include "../../core/fmsg.h"
 #include "../../core/kemi.h"
+#include "../../core/daemonize.h"
 #include "../../modules/tm/tm_load.h"
 
 #include "async_http.h"
@@ -89,8 +90,12 @@ int async_http_init_worker(int prank, async_http_worker_t* worker)
 
 void async_http_run_worker(async_http_worker_t* worker)
 {
+	int ret;
 	init_http_multi(worker->evbase, worker->g);
-	event_base_dispatch(worker->evbase);
+	ret = event_base_dispatch(worker->evbase);
+	LM_ERR("event base dispatch failed - ret: %d (errno: %d - %s)\n", ret, errno,
+			strerror(errno));
+	ksr_exit(-1);
 }
 
 int async_http_init_sockets(async_http_worker_t *worker)
@@ -303,6 +308,7 @@ void notification_socket_cb(int fd, short event, void *arg)
 
 	memset(&query_params, 0, sizeof(http_m_params_t));
 	query_params.timeout = aq->query_params.timeout;
+	query_params.follow_redirect = aq->query_params.follow_redirect;
 	query_params.tls_verify_peer = aq->query_params.tls_verify_peer;
 	query_params.tls_verify_host = aq->query_params.tls_verify_host;
 	query_params.authmethod = aq->query_params.authmethod;
@@ -497,6 +503,7 @@ int async_send_query(sip_msg_t *msg, str *query, str *cbname)
 	aq->query_params.tls_verify_host = ah_params.tls_verify_host;
 	aq->query_params.suspend_transaction = suspend;
 	aq->query_params.timeout = ah_params.timeout;
+	aq->query_params.follow_redirect = ah_params.follow_redirect;
 	aq->query_params.tcp_keepalive = ah_params.tcp_keepalive;
 	aq->query_params.tcp_ka_idle = ah_params.tcp_ka_idle;
 	aq->query_params.tcp_ka_interval = ah_params.tcp_ka_interval;
@@ -644,6 +651,7 @@ void set_query_params(struct query_params *p) {
 	p->tls_verify_peer = tls_verify_peer;
 	p->suspend_transaction = 1;
 	p->timeout = http_timeout;
+	p->follow_redirect = curl_follow_redirect;
 	p->method = AH_METH_DEFAULT;
 	p->authmethod = default_authmethod;
 	p->tcp_keepalive = tcp_keepalive;

@@ -42,6 +42,8 @@ enum rtpe_operation {
         OP_UNBLOCK_DTMF,
         OP_BLOCK_MEDIA,
         OP_UNBLOCK_MEDIA,
+        OP_SILENCE_MEDIA,
+        OP_UNSILENCE_MEDIA,
         OP_START_FORWARDING,
         OP_STOP_FORWARDING,
         OP_PLAY_MEDIA,
@@ -54,7 +56,14 @@ enum rtpe_operation {
 struct rtpp_node {
 	unsigned int		idx;			/* overall index */
 	str			rn_url;			/* unparsed, deletable */
-	int			rn_umode;
+	enum {
+		RNU_UNKNOWN = -1,
+		RNU_LOCAL = 0,
+		RNU_UDP = 1,
+		RNU_UDP6 = 6,
+		RNU_WS = 2,
+		RNU_WSS = 3,
+	}			rn_umode;
 	char			*rn_address;		/* substring of rn_url */
 	int			rn_disabled;		/* found unaccessible? */
 	unsigned int		rn_weight;		/* for load balancing */

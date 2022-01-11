@@ -14,9 +14,11 @@
 %bcond_without jansson
 %bcond_without json
 %bcond_without lua
+%bcond_without lwsc
 %bcond_without kazoo
 %bcond_without memcached
 %bcond_without mongodb
+%bcond_without nats
 %bcond_without perl
 %bcond_without phonenum
 %bcond_without python3
@@ -28,9 +30,15 @@
 %bcond_without xmlrpc
 %endif
 
-%if 0%{?centos_ver} == 6
+%if 0%{?rhel} == 6
+%if 0%{?centos_ver}
 %define dist_name centos
 %define dist_version %{?centos}
+%endif
+%if 0%{?centos_ver} == 0
+%define dist_name rhel
+%define dist_version %{?rhel}
+%endif
 %bcond_with cnxcc
 %bcond_without dnssec
 %bcond_without evapi
@@ -40,9 +48,11 @@
 %bcond_without jansson
 %bcond_without json
 %bcond_without lua
+%bcond_with lwsc
 %bcond_without kazoo
 %bcond_without memcached
 %bcond_with mongodb
+%bcond_with nats
 %bcond_without perl
 %bcond_with phonenum
 %bcond_with python3
@@ -54,10 +64,16 @@
 %bcond_without xmlrpc
 %endif
 
-%if 0%{?centos_ver} == 7
+%if 0%{?rhel} == 7
+%if 0%{?centos_ver}
 %define dist_name centos
 %define dist_version %{?centos}
 %define dist .el7.centos
+%endif
+%if 0%{?centos_ver} == 0
+%define dist_name rhel
+%define dist_version %{?rhel}
+%endif
 %bcond_without cnxcc
 %bcond_with dnssec
 %bcond_without evapi
@@ -67,9 +83,11 @@
 %bcond_without jansson
 %bcond_without json
 %bcond_without lua
+%bcond_without lwsc
 %bcond_without kazoo
 %bcond_without memcached
 %bcond_without mongodb
+%bcond_with nats
 %bcond_without perl
 %bcond_without phonenum
 %bcond_without python3
@@ -81,10 +99,26 @@
 %bcond_without xmlrpc
 %endif
 
-%if 0%{?centos_ver} == 8
+%if 0%{?rhel} == 8
+%if 0%{?centos_ver}
 %define dist_name centos
 %define dist_version %{?centos}
 %define dist .el8.centos
+%endif
+%if 0%{?almalinux_ver}
+%define dist_name centos
+%define dist_version %{?almalinux}
+%define dist .el8.almalinux
+%endif
+%if 0%{?rocky_ver}
+%define dist_name centos
+%define dist_version %{?rocky}
+%define dist .el8.rocky
+%endif
+%if 0%{?centos_ver} == 0 && 0%{?almalinux_ver} == 0 && 0%{?rocky_ver} == 0
+%define dist_name rhel
+%define dist_version %{?rhel}
+%endif
 %bcond_without cnxcc
 %bcond_with dnssec
 %bcond_without evapi
@@ -94,9 +128,11 @@
 %bcond_without jansson
 %bcond_without json
 %bcond_without lua
+%bcond_without lwsc
 %bcond_without kazoo
 %bcond_without memcached
 %bcond_without mongodb
+%bcond_without nats
 %bcond_without perl
 %bcond_without phonenum
 %bcond_without python3
@@ -120,91 +156,15 @@
 %bcond_without jansson
 %bcond_without json
 %bcond_without lua
+%bcond_without lwsc
 %bcond_with kazoo
 %bcond_without memcached
 %bcond_with mongodb
+%bcond_with nats
 %bcond_without perl
 %bcond_with phonenum
 %bcond_without python3
 %bcond_with rabbitmq
-%bcond_without redis
-%bcond_without ruby
-%bcond_without sctp
-%bcond_without websocket
-%bcond_without xmlrpc
-%endif
-
-%if 0%{?rhel} == 6 && 0%{?centos_ver} != 6
-%define dist_name rhel
-%define dist_version %{?rhel}
-%bcond_with cnxcc
-%bcond_without dnssec
-%bcond_without evapi
-%bcond_with geoip
-%bcond_with http_async_client
-%bcond_with ims
-%bcond_with jansson
-%bcond_with json
-%bcond_with lua
-%bcond_with kazoo
-%bcond_with memcached
-%bcond_with mongodb
-%bcond_with perl
-%bcond_with phonenum
-%bcond_with python3
-%bcond_with rabbitmq
-%bcond_with redis
-%bcond_with ruby
-%bcond_with sctp
-%bcond_with websocket
-%bcond_without xmlrpc
-%endif
-
-%if 0%{?rhel} == 7 && 0%{?centos_ver} != 7
-%define dist_name rhel
-%define dist_version %{?rhel}
-%bcond_without cnxcc
-%bcond_with dnssec
-%bcond_without evapi
-%bcond_without geoip
-%bcond_without http_async_client
-%bcond_without ims
-%bcond_without jansson
-%bcond_without json
-%bcond_without lua
-%bcond_without kazoo
-%bcond_without memcached
-%bcond_without mongodb
-%bcond_without perl
-%bcond_without phonenum
-%bcond_without python3
-%bcond_without rabbitmq
-%bcond_without redis
-%bcond_without ruby
-%bcond_without sctp
-%bcond_without websocket
-%bcond_without xmlrpc
-%endif
-
-%if 0%{?rhel} == 8 && 0%{?centos_ver} != 8
-%define dist_name rhel
-%define dist_version %{?rhel}
-%bcond_without cnxcc
-%bcond_with dnssec
-%bcond_without evapi
-%bcond_without geoip
-%bcond_without http_async_client
-%bcond_without ims
-%bcond_without jansson
-%bcond_without json
-%bcond_without lua
-%bcond_without kazoo
-%bcond_without memcached
-%bcond_without mongodb
-%bcond_without perl
-%bcond_without phonenum
-%bcond_without python3
-%bcond_without rabbitmq
 %bcond_without redis
 %bcond_without ruby
 %bcond_without sctp
@@ -215,6 +175,11 @@
 # Defining missing macros on RHEL/CentOS 6
 %if 0%{?rhel} == 6
 %define _rundir %{_localstatedir}/run
+%endif
+
+# build with openssl 1.1.1 on RHEL 7 based dists
+%if 0%{?rhel} == 7
+%bcond_with openssl11
 %endif
 
 # redefine buggy openSUSE Leap _sharedstatedir macro. More info at https://bugzilla.redhat.com/show_bug.cgi?id=183370
@@ -254,9 +219,11 @@ Conflicts:  kamailio-auth-ephemeral < %ver, kamailio-bdb < %ver
 Conflicts:  kamailio-carrierroute < %ver, kamailio-cpl < %ver
 Conflicts:  kamailio-dialplan < %ver, kamailio-dnssec < %ver
 Conflicts:  kamailio-geoip < %ver, kamailio-gzcompress < %ver
+Conflicts:  kamailio-http_client < %ver
 Conflicts:  kamailio-ims < %ver, kamailio-java < %ver, kamailio-json < %ver
-Conflicts:  kamailio-lcr < %ver, kamailio-ldap < %ver, kamailio-lost < %ver, kamailio-lua < %ver
 Conflicts:  kamailio-kazoo < %ver
+Conflicts:  kamailio-lcr < %ver, kamailio-ldap < %ver, kamailio-lost < %ver, kamailio-lua < %ver
+Conflicts:  kamailio-nats < %ver
 Conflicts:  kamailio-rabbitmq < %ver
 Conflicts:  kamailio-memcached < %ver, kamailio-mongodb < %ver, kamailio-mysql < %ver
 Conflicts:  kamailio-outbound < %ver, kamailio-perl < %ver
@@ -265,6 +232,7 @@ Conflicts:  kamailio-python < %ver
 Conflicts:  kamailio-radius < %ver, kamailio-redis < %ver
 Conflicts:  kamailio-regex < %ver, kamailio-ruby < %ver
 Conflicts:  kamailio-sctp < %ver, kamailio-secfilter < %ver, kamailio-sipdump < %ver
+Conflicts:  kamailio-slack < %ver
 Conflicts:  kamailio-snmpstats < %ver, kamailio-sqlang < %ver, kamailio-sqlite < %ver
 Conflicts:  kamailio-tls < %ver, kamailio-unixodbc < %ver
 Conflicts:  kamailio-utils < %ver, kamailio-websocket < %ver
@@ -324,8 +292,13 @@ Account transaction information in a JSON dictionary.
 %package    auth-ephemeral
 Summary:    Functions for authentication using ephemeral credentials
 Group:      %{PKGGROUP}
+%if 0%{?rhel} == 7 && %{with openssl11}
+Requires:   openssl11, kamailio = %ver
+BuildRequires:  openssl11-devel
+%else
 Requires:   openssl, kamailio = %ver
 BuildRequires:  openssl-devel
+%endif
 
 %description    auth-ephemeral
 Functions for authentication using ephemeral credentials.
@@ -410,8 +383,13 @@ Requires:   openssl
 BuildRequires:  openssl-devel
 %endif
 %if 0%{?rhel} == 7
+%if %{with openssl11}
+Requires:   openssl11-libs
+BuildRequires:  openssl11-devel
+%else
 Requires:   openssl-libs
 BuildRequires:  openssl-devel
+%endif
 %endif
 %if 0%{?fedora}
 Requires:   openssl-libs
@@ -661,6 +639,18 @@ Lua extensions for Kamailio.
 %endif
 
 
+%if %{with lwsc}
+%package    lwsc
+Summary:    Websocket client implementation to interact with external systems, similar to http client
+Group:      %{PKGGROUP}
+Requires:   libwebsockets, kamailio = %ver
+BuildRequires:  libwebsockets-devel
+
+%description    lwsc
+Websocket client implementation to interact with external systems, similar to http client.
+%endif
+
+
 %if %{with memcached}
 %package    memcached
 Summary:    Memcached configuration file support for Kamailio
@@ -703,11 +693,28 @@ BuildRequires:  mysql-devel
 MySQL database connectivity for Kamailio.
 
 
+%if %{with nats}
+%package    nats
+Summary:    NATS consumer for Kamailio
+Group:      %{PKGGROUP}
+Requires:   libnats, kamailio = %ver
+BuildRequires:    libnats-devel
+
+%description    nats
+The module provides an NATS consumer for Kamailio. NATS is a real time distributed messaging platform, more details about it can be found at nats.io.
+%endif
+
+
 %package    outbound
 Summary:    Outbound (RFC 5626) support for Kamailio
 Group:      %{PKGGROUP}
+%if 0%{?rhel} == 7 && %{with openssl11}
+Requires:   openssl11, kamailio = %ver
+BuildRequires:  openssl11-devel
+%else
 Requires:   openssl, kamailio = %ver
 BuildRequires:  openssl-devel
+%endif
 
 %description    outbound
 RFC 5626, "Managing Client-Initiated Connections in the Session Initiation
@@ -919,6 +926,23 @@ Requires:   kamailio = %ver
 This module serializes SIP message attributes into a JSON document
 
 
+%package    slack
+Summary:    Slack integration module for Kamailio
+Group:      %{PKGGROUP}
+
+Requires:   kamailio = %ver, kamailio-http_client = %ver
+%if 0%{?suse_version}
+Requires:   libcurl4
+BuildRequires:  libcurl-devel
+%else
+Requires:   libcurl
+BuildRequires:  libcurl-devel
+%endif
+
+%description    slack
+This module provides integration with Slack over webhooks. 
+
+
 %package    smsops
 Summary:    Tools for handling SMS packets in SIP messages
 Group:      %{PKGGROUP}
@@ -985,8 +1009,13 @@ SQLite database connectivity for Kamailio.
 %package    tls
 Summary:    TLS transport for Kamailio
 Group:      %{PKGGROUP}
+%if 0%{?rhel} == 7 && %{with openssl11}
+Requires:   openssl11, kamailio = %ver
+BuildRequires:  openssl11-devel
+%else
 Requires:   openssl, kamailio = %ver
 BuildRequires:  openssl-devel
+%endif
 
 %description    tls
 TLS transport for Kamailio.
@@ -1041,8 +1070,13 @@ Non-SIP utitility functions for Kamailio.
 %package    websocket
 Summary:    WebSocket transport for Kamailio
 Group:      %{PKGGROUP}
+%if 0%{?rhel} == 7 && %{with openssl11}
+Requires:   libunistring, openssl11, kamailio = %ver
+BuildRequires:  libunistring-devel, openssl11-devel
+%else
 Requires:   libunistring, openssl, kamailio = %ver
 BuildRequires:  libunistring-devel, openssl-devel
+%endif
 
 %description    websocket
 WebSocket transport for Kamailio.
@@ -1139,6 +1173,9 @@ make cfg prefix=/usr \
 make
 make every-module skip_modules="app_mono db_cassandra db_oracle iptrtpproxy \
     jabber ndb_cassandra osp" \
+%if %{with openssl11}
+    SSL_BUILDER="pkg-config libssl11" \
+%endif
 %if 0%{?fedora} || 0%{?suse_version} || 0%{?rhel} == 8
     FREERADIUS=1 \
 %endif
@@ -1178,6 +1215,9 @@ make every-module skip_modules="app_mono db_cassandra db_oracle iptrtpproxy \
 %if %{with lua}
     klua \
 %endif
+%if %{with lwsc}
+    klwsc \
+%endif
 %if %{with memcached}
     kmemcached \
 %endif
@@ -1188,6 +1228,9 @@ make every-module skip_modules="app_mono db_cassandra db_oracle iptrtpproxy \
     kmongodb \
 %endif
     kmysql koutbound \
+%if %{with nats}
+    knats \
+%endif
 %if %{with perl}
     kperl \
 %endif
@@ -1231,6 +1274,9 @@ rm -rf %{buildroot}
 make install
 make install-modules-all skip_modules="app_mono db_cassandra db_oracle \
     iptrtpproxy jabber osp" \
+%if %{with openssl11}
+    SSL_BUILDER="pkg-config libssl11" \
+%endif
 %if 0%{?fedora} || 0%{?suse_version} || 0%{?rhel} == 8
     FREERADIUS=1 \
 %endif
@@ -1270,6 +1316,9 @@ make install-modules-all skip_modules="app_mono db_cassandra db_oracle \
 %if %{with lua}
     klua \
 %endif
+%if %{with lwsc}
+    klwsc \
+%endif
 %if %{with memcached}
     kmemcached \
 %endif
@@ -1280,6 +1329,9 @@ make install-modules-all skip_modules="app_mono db_cassandra db_oracle \
     kmongodb \
 %endif
     kmysql koutbound \
+%if %{with nats}
+    knats \
+%endif
 %if %{with perl}
     kperl \
 %endif
@@ -1449,11 +1501,11 @@ fi
 %doc %{_docdir}/kamailio/modules/README.kemix
 %doc %{_docdir}/kamailio/modules/README.kex
 %doc %{_docdir}/kamailio/modules/README.lrkproxy
-%doc %{_docdir}/kamailio/modules/README.malloc_test
 %doc %{_docdir}/kamailio/modules/README.mangler
 %doc %{_docdir}/kamailio/modules/README.matrix
 %doc %{_docdir}/kamailio/modules/README.maxfwd
 %doc %{_docdir}/kamailio/modules/README.mediaproxy
+%doc %{_docdir}/kamailio/modules/README.misctest
 %doc %{_docdir}/kamailio/modules/README.mohqueue
 %doc %{_docdir}/kamailio/modules/README.mqueue
 %doc %{_docdir}/kamailio/modules/README.msilo
@@ -1468,6 +1520,7 @@ fi
 %doc %{_docdir}/kamailio/modules/README.permissions
 %doc %{_docdir}/kamailio/modules/README.pike
 %doc %{_docdir}/kamailio/modules/README.pipelimit
+%doc %{_docdir}/kamailio/modules/README.posops
 %doc %{_docdir}/kamailio/modules/README.prefix_route
 %doc %{_docdir}/kamailio/modules/README.print
 %doc %{_docdir}/kamailio/modules/README.print_lib
@@ -1608,11 +1661,11 @@ fi
 %{_libdir}/kamailio/modules/kemix.so
 %{_libdir}/kamailio/modules/kex.so
 %{_libdir}/kamailio/modules/lrkproxy.so
-%{_libdir}/kamailio/modules/malloc_test.so
 %{_libdir}/kamailio/modules/mangler.so
 %{_libdir}/kamailio/modules/matrix.so
 %{_libdir}/kamailio/modules/maxfwd.so
 %{_libdir}/kamailio/modules/mediaproxy.so
+%{_libdir}/kamailio/modules/misctest.so
 %{_libdir}/kamailio/modules/mohqueue.so
 %{_libdir}/kamailio/modules/mqueue.so
 %{_libdir}/kamailio/modules/msilo.so
@@ -1627,6 +1680,7 @@ fi
 %{_libdir}/kamailio/modules/permissions.so
 %{_libdir}/kamailio/modules/pike.so
 %{_libdir}/kamailio/modules/pipelimit.so
+%{_libdir}/kamailio/modules/posops.so
 %{_libdir}/kamailio/modules/prefix_route.so
 %{_libdir}/kamailio/modules/print.so
 %{_libdir}/kamailio/modules/print_lib.so
@@ -1932,6 +1986,13 @@ fi
 %endif
 
 
+%if %{with lwsc}
+%files      lwsc
+%defattr(-,root,root)
+%doc %{_docdir}/kamailio/modules/README.lwsc
+%{_libdir}/kamailio/modules/lwsc.so
+%endif
+
 %if %{with memcached}
 %files      memcached
 %defattr(-,root,root)
@@ -1958,6 +2019,14 @@ fi
 %{_libdir}/kamailio/kamctl/kamdbctl.mysql
 %dir %{_datadir}/kamailio/mysql
 %{_datadir}/kamailio/mysql/*
+
+
+%if %{with nats}
+%files      nats
+%defattr(-,root,root)
+%doc %{_docdir}/kamailio/modules/README.nats
+%{_libdir}/kamailio/modules/nats.so
+%endif
 
 
 %files      outbound
@@ -2164,6 +2233,12 @@ fi
 %defattr(-,root,root)
 %doc %{_docdir}/kamailio/modules/README.sipjson
 %{_libdir}/kamailio/modules/sipjson.so
+
+
+%files      slack
+%defattr(-,root,root)
+%doc %{_docdir}/kamailio/modules/README.slack
+%{_libdir}/kamailio/modules/slack.so
 
 
 %files      snmpstats

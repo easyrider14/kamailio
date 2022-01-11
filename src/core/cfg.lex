@@ -129,8 +129,9 @@
 
 /* start conditions */
 %x STRING1 STRING2 STR_BETWEEN COMMENT COMMENT_LN ATTR SELECT AVP_PVAR PVAR_P
-%x PVARID INCLF IMPTF EVRTNAME CFGPRINTMODE CFGPRINTLOADMOD DEFENV_ID
-%x LINECOMMENT DEFINE_ID DEFINE_EOL DEFINE_DATA IFDEF_ID IFDEF_EOL IFDEF_SKIP
+%x PVARID INCLF IMPTF EVRTNAME CFGPRINTMODE CFGPRINTLOADMOD DEFENV_ID DEFENVS_ID
+%x TRYDEFENV_ID TRYDEFENVS_ID LINECOMMENT DEFINE_ID DEFINE_EOL DEFINE_DATA 
+%x IFDEF_ID IFDEF_EOL IFDEF_SKIP
 
 /* config script types : #!SER  or #!KAMAILIO or #!MAX_COMPAT */
 SER_CFG			SER
@@ -304,6 +305,7 @@ XAVPVIAPARAMS	xavp_via_params
 XAVPVIAFIELDS	xavp_via_fields
 LISTEN		listen
 ADVERTISE	advertise|ADVERTISE
+VIRTUAL		virtual
 STRNAME		name|NAME
 ALIAS		alias
 SR_AUTO_ALIASES	auto_aliases
@@ -373,6 +375,7 @@ MEMSAFETY	"mem_safety"
 MEMJOIN		"mem_join"
 MEMSTATUSMODE		"mem_status_mode"
 CORELOG		"corelog"|"core_log"
+SIP_PARSER_LOG_ONELINE "sip_parser_log_oneline"
 SIP_PARSER_LOG "sip_parser_log"
 SIP_PARSER_MODE "sip_parser_mode"
 SIP_WARNING sip_warning
@@ -420,6 +423,7 @@ TCP_OPT_ACCEPT_HEP3	"tcp_accept_hep3"
 TCP_OPT_ACCEPT_HAPROXY	"tcp_accept_haproxy"
 TCP_CLONE_RCVBUF	"tcp_clone_rcvbuf"
 TCP_REUSE_PORT		"tcp_reuse_port"
+TCP_WAIT_DATA	"tcp_wait_data"
 DISABLE_TLS		"disable_tls"|"tls_disable"
 ENABLE_TLS		"enable_tls"|"tls_enable"
 TLSLOG			"tlslog"|"tls_log"
@@ -512,8 +516,8 @@ TLS			"tls"|"TLS"
 SCTP		"sctp"|"SCTP"
 WS		"ws"|"WS"
 WSS		"wss"|"WSS"
-INET		"inet"|"INET"
-INET6		"inet6"|"INET6"
+INET		"inet"|"INET"|"ipv4"|"IPv4"|"IPV4"
+INET6		"inet6"|"INET6"|"ipv6"|"IPv6"|"IPV6"
 SSLv23			"sslv23"|"SSLv23"|"SSLV23"
 SSLv2			"sslv2"|"SSLv2"|"SSLV2"
 SSLv3			"sslv3"|"SSLv3"|"SSLV3"
@@ -564,6 +568,9 @@ ENDIF        endif
 TRYDEF       "trydefine"|"trydef"
 REDEF        "redefine"|"redef"
 DEFENV       defenv
+DEFENVS      defenvs
+TRYDEFENV    trydefenv
+TRYDEFENVS   trydefenvs
 
 /* else is already defined */
 
@@ -735,6 +742,7 @@ IMPORTFILE      "import_file"
 <INITIAL>{XAVPVIAFIELDS}	{ yylval.strval=yytext; return XAVPVIAFIELDS; }
 <INITIAL>{LISTEN}	{ count(); yylval.strval=yytext; return LISTEN; }
 <INITIAL>{ADVERTISE}	{ count(); yylval.strval=yytext; return ADVERTISE; }
+<INITIAL>{VIRTUAL}	{ count(); yylval.strval=yytext; return VIRTUAL; }
 <INITIAL>{STRNAME}	{ count(); yylval.strval=yytext; return STRNAME; }
 <INITIAL>{ALIAS}	{ count(); yylval.strval=yytext; return ALIAS; }
 <INITIAL>{SR_AUTO_ALIASES}	{ count(); yylval.strval=yytext;
@@ -835,6 +843,7 @@ IMPORTFILE      "import_file"
 <INITIAL>{MEMSAFETY}	{ count(); yylval.strval=yytext; return MEMSAFETY; }
 <INITIAL>{MEMJOIN}	{ count(); yylval.strval=yytext; return MEMJOIN; }
 <INITIAL>{MEMSTATUSMODE}	{ count(); yylval.strval=yytext; return MEMSTATUSMODE; }
+<INITIAL>{SIP_PARSER_LOG_ONELINE}  { count(); yylval.strval=yytext; return SIP_PARSER_LOG_ONELINE; }
 <INITIAL>{SIP_PARSER_LOG}  { count(); yylval.strval=yytext; return SIP_PARSER_LOG; }
 <INITIAL>{SIP_PARSER_MODE}  { count(); yylval.strval=yytext; return SIP_PARSER_MODE; }
 <INITIAL>{CORELOG}	{ count(); yylval.strval=yytext; return CORELOG; }
@@ -910,6 +919,8 @@ IMPORTFILE      "import_file"
 <INITIAL>{TCP_CLONE_RCVBUF}		{ count(); yylval.strval=yytext;
 									return TCP_CLONE_RCVBUF; }
 <INITIAL>{TCP_REUSE_PORT}	{ count(); yylval.strval=yytext; return TCP_REUSE_PORT; }
+<INITIAL>{TCP_WAIT_DATA}	{ count(); yylval.strval=yytext;
+									return TCP_WAIT_DATA; }
 <INITIAL>{DISABLE_TLS}	{ count(); yylval.strval=yytext; return DISABLE_TLS; }
 <INITIAL>{ENABLE_TLS}	{ count(); yylval.strval=yytext; return ENABLE_TLS; }
 <INITIAL>{TLSLOG}		{ count(); yylval.strval=yytext; return TLS_PORT_NO; }
@@ -1337,7 +1348,7 @@ IMPORTFILE      "import_file"
 <DEFINE_DATA>\\{CR}		{	count(); ksr_cfg_print_part(yytext); } /* eat the escaped CR */
 <DEFINE_DATA>{CR}		{	count();
 							ksr_cfg_print_part(yytext);
-							if (pp_define_set(strlen(s_buf.s), s_buf.s)) return 1;
+							if (pp_define_set(strlen(s_buf.s), s_buf.s, KSR_PPDEF_NORMAL)) return 1;
 							memset(&s_buf, 0, sizeof(s_buf));
 							state = INITIAL;
 							ksr_cfg_print_initial_state();
@@ -1447,7 +1458,70 @@ IMPORTFILE      "import_file"
 <DEFENV_ID>[^ \t\r\n]+   { /* get the define id of environment variable */
 				count();
 				ksr_cfg_print_part(yytext);
-				if(pp_define_env(yytext, yyleng) < 0) {
+				if(pp_define_env(yytext, yyleng, KSR_PPDEF_NORMAL, KSR_PPDEF_VALREQ) < 0) {
+					LM_CRIT("error at %s line %d\n", (finame)?finame:"cfg", line);
+					ksr_exit(-1);
+				}
+				state = INITIAL;
+				ksr_cfg_print_initial_state();
+}
+
+<INITIAL,CFGPRINTMODE>{PREP_START}{DEFENVS}  { count();
+			ksr_cfg_print_part(yytext);
+			state = DEFINE_S;
+			BEGIN(DEFENVS_ID);
+}
+
+<DEFENVS_ID>[ \t]*      { /* eat the whitespace */
+				count();
+				ksr_cfg_print_part(yytext);
+			}
+<DEFENVS_ID>[^ \t\r\n]+   { /* get the define id of environment variable */
+				count();
+				ksr_cfg_print_part(yytext);
+				if(pp_define_env(yytext, yyleng, KSR_PPDEF_QUOTED, KSR_PPDEF_VALREQ) < 0) {
+					LM_CRIT("error at %s line %d\n", (finame)?finame:"cfg", line);
+					ksr_exit(-1);
+				}
+				state = INITIAL;
+				ksr_cfg_print_initial_state();
+}
+
+<INITIAL,CFGPRINTMODE>{PREP_START}{TRYDEFENV}  { count();
+			ksr_cfg_print_part(yytext);
+			state = DEFINE_S;
+			BEGIN(TRYDEFENV_ID);
+}
+
+<TRYDEFENV_ID>[ \t]*      { /* eat the whitespace */
+				count();
+				ksr_cfg_print_part(yytext);
+			}
+<TRYDEFENV_ID>[^ \t\r\n]+   { /* get the define id of environment variable */
+				count();
+				ksr_cfg_print_part(yytext);
+				if(pp_define_env(yytext, yyleng, KSR_PPDEF_NORMAL, KSR_PPDEF_VALTRY) < 0) {
+					LM_CRIT("error at %s line %d\n", (finame)?finame:"cfg", line);
+					ksr_exit(-1);
+				}
+				state = INITIAL;
+				ksr_cfg_print_initial_state();
+}
+
+<INITIAL,CFGPRINTMODE>{PREP_START}{TRYDEFENVS}  { count();
+			ksr_cfg_print_part(yytext);
+			state = DEFINE_S;
+			BEGIN(TRYDEFENVS_ID);
+}
+
+<TRYDEFENVS_ID>[ \t]*      { /* eat the whitespace */
+				count();
+				ksr_cfg_print_part(yytext);
+			}
+<TRYDEFENVS_ID>[^ \t\r\n]+   { /* get the define id of environment variable */
+				count();
+				ksr_cfg_print_part(yytext);
+				if(pp_define_env(yytext, yyleng, KSR_PPDEF_QUOTED, KSR_PPDEF_VALTRY) < 0) {
 					LM_CRIT("error at %s line %d\n", (finame)?finame:"cfg", line);
 					ksr_exit(-1);
 				}
@@ -1593,7 +1667,7 @@ static char* addchar(struct str_buf* dst, char c)
 
 static char* addstr(struct str_buf* dst_b, char* src, int len)
 {
-	char *tmp;
+	char *tmp = NULL;
 	unsigned size;
 	unsigned used;
 
@@ -1611,6 +1685,10 @@ static char* addstr(struct str_buf* dst_b, char* src, int len)
 		dst_b->s=tmp;
 		dst_b->crt=dst_b->s+used;
 		dst_b->left=size-used;
+	}
+	if(dst_b->crt==NULL) {
+		LM_CRIT("unexpected null dst buffer\n");
+		ksr_exit(-1);
 	}
 	memcpy(dst_b->crt, src, len);
 	dst_b->crt+=len;
@@ -1798,13 +1876,14 @@ static int sr_push_yy_state(char *fin, int mode)
 		fp = fopen(newf, "r" );
 		if ( fp==NULL )
 		{
-			pkg_free(newf);
 			if(mode==0)
 			{
 				LM_CRIT("cannot open included file: %s (%s)\n", fbuf, newf);
+				pkg_free(newf);
 				return -1;
 			} else {
 				LM_DBG("importing file ignored: %s (%s)\n", fbuf, newf);
+				pkg_free(newf);
 				return 0;
 			}
 		}
@@ -1923,10 +2002,15 @@ ksr_ppdefine_t* pp_get_define(int idx)
 	return &pp_defines[idx];
 }
 
-static int pp_lookup(int len, const char * text)
+static int pp_lookup(int len, const char *text)
 {
 	str var = {(char *)text, len};
 	int i;
+
+	if(len<=0 || text==NULL) {
+		LM_ERR("invalid parameters");
+		return -1;
+	}
 
 	for (i=0; i<pp_num_defines; i++)
 		if (STR_EQ(pp_defines[i].name, var))
@@ -1941,9 +2025,14 @@ int pp_define_set_type(int type)
 	return 0;
 }
 
-int pp_define(int len, const char * text)
+int pp_define(int len, const char *text)
 {
 	int ppos;
+
+	if(len<=0 || text==NULL) {
+		LM_ERR("invalid parameters");
+		return -1;
+	}
 
 	LM_DBG("defining id: %.*s\n", len, text);
 
@@ -1992,7 +2081,7 @@ int pp_define(int len, const char * text)
 	return 0;
 }
 
-int pp_define_set(int len, char *text)
+int pp_define_set(int len, char *text, int mode)
 {
 	int ppos;
 
@@ -2006,7 +2095,7 @@ int pp_define_set(int len, char *text)
 		LM_BUG("BUG: the index in define table not set yet\n");
 		return -1;
 	}
-	if(len<=0) {
+	if(len<=0 || text==NULL) {
 		LM_DBG("no define value - ignoring\n");
 		return 0;
 	}
@@ -2034,19 +2123,21 @@ int pp_define_set(int len, char *text)
 
 	pp_defines[ppos].value.len = len;
 	pp_defines[ppos].value.s = text;
-	LM_DBG("### setting define ID [%.*s] value [%.*s]\n",
+	LM_DBG("### setting define ID [%.*s] value [%.*s] (mode: %d)\n",
 			pp_defines[ppos].name.len,
 			pp_defines[ppos].name.s,
 			pp_defines[ppos].value.len,
-			pp_defines[ppos].value.s);
+			pp_defines[ppos].value.s,
+			mode);
 	return 0;
 }
 
-int pp_define_env(const char * text, int len)
+int pp_define_env(const char *text, int len, int qmode, int vmode)
 {
 	char *r;
 	str defname;
 	str defvalue;
+	str newval;
 
 	r = strchr(text, '=');
 
@@ -2065,6 +2156,9 @@ int pp_define_env(const char * text, int len)
 	defvalue.s = getenv(r);
 
 	if(defvalue.s == NULL) {
+        if(vmode == KSR_PPDEF_VALTRY) {
+            return 0;
+        }
 		LM_ERR("env variable not defined [%s]\n", (char*)text);
 		return -1;
 	}
@@ -2075,7 +2169,14 @@ int pp_define_env(const char * text, int len)
 		LM_ERR("cannot set define name [%s]\n", (char*)text);
 		return -1;
 	}
-	if(pp_define_set(defvalue.len, defvalue.s)<0) {
+	if(qmode==KSR_PPDEF_QUOTED) {
+		if(pp_def_qvalue(&defvalue, &newval) < 0) {
+			LM_ERR("failed to enclose in quotes the value\n");
+			return -1;
+		}
+		defvalue = newval;
+	}
+	if(pp_define_set(defvalue.len, defvalue.s, qmode)<0) {
 		LM_ERR("cannot set define value [%s]\n", (char*)text);
 		return -1;
 	}
@@ -2083,7 +2184,7 @@ int pp_define_env(const char * text, int len)
 	return 0;
 }
 
-str *pp_define_get(int len, const char * text)
+str *pp_define_get(int len, const char *text)
 {
 	str var = {(char *)text, len};
 	int i;
@@ -2125,7 +2226,7 @@ static int pp_ifdef_type(int type)
  * ifndef defined   -> 0
  * ifndef undefined -> 1
  */
-static void pp_ifdef_var(int len, const char * text)
+static void pp_ifdef_var(int len, const char *text)
 {
 	pp_ifdef_stack[pp_sptr] ^= (pp_lookup(len, text) < 0);
 }

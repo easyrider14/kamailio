@@ -119,7 +119,7 @@ static int  trace_add_info_xavp(siptrace_info_t* info);
 static inline int trace_parse_raw_uri(siptrace_info_t* info);
 
 int siptrace_net_data_recv(sr_event_param_t *evp);
-int siptrace_net_data_send(sr_event_param_t *evp);
+int siptrace_net_data_sent(sr_event_param_t *evp);
 
 #define SIPTRACE_INIT_MODE_ALL 0
 #define SIPTRACE_INIT_MODE_CORECB 1
@@ -194,6 +194,10 @@ static str trace_local_ip = {NULL, 0};
 
 static db1_con_t *db_con = NULL; /*!< database connection */
 static db_func_t db_funcs;		  /*!< Database functions */
+
+int pv_parse_siptrace_name(pv_spec_t *sp, str *in);
+int pv_get_siptrace(sip_msg_t *msg, pv_param_t *param,
+		pv_value_t *res);
 
 /*! \brief
  * Exported functions
@@ -276,6 +280,14 @@ stat_export_t siptrace_stats[] = {
 /* clang-format on */
 #endif
 
+static pv_export_t mod_pvs[] = {
+
+	{ {"siptrace", (sizeof("siptrace")-1)}, PVT_OTHER, pv_get_siptrace, 0,
+		pv_parse_siptrace_name, 0, 0, 0 },
+
+	{ {0, 0}, 0, 0, 0, 0, 0, 0, 0 }
+};
+
 /*! \brief module exports */
 /* clang-format off */
 struct module_exports exports = {
@@ -283,9 +295,9 @@ struct module_exports exports = {
 	DEFAULT_DLFLAGS, /*!< dlopen flags */
 	cmds,			/*!< exported functions */
 	params,			/*!< exported parameters */
-	0,				/*!< exported rpc functions */
-	0,				/*!< exported pseudo-variables */
-	0,				/*!< response function */
+	0,			/*!< exported rpc functions */
+	mod_pvs,		/*!< exported pseudo-variables */
+	0,			/*!< response function */
 	mod_init,		/*!< module initialization function */
 	child_init,		/*!< child initialization function */
 	destroy			/*!< destroy function */
@@ -319,7 +331,7 @@ static int mod_init(void)
 	}
 
 	if(hep_version != 1 && hep_version != 2 && hep_version != 3) {
-		LM_ERR("unsupported version of HEP");
+		LM_ERR("unsupported version of HEP\n");
 		return -1;
 	}
 
@@ -481,7 +493,7 @@ static int mod_init(void)
 			|| _siptrace_init_mode==SIPTRACE_INIT_MODE_CORECB) {
 		if(_siptrace_mode != SIPTRACE_MODE_NONE) {
 			sr_event_register_cb(SREV_NET_DATA_RECV, siptrace_net_data_recv);
-			sr_event_register_cb(SREV_NET_DATA_SEND, siptrace_net_data_send);
+			sr_event_register_cb(SREV_NET_DATA_SENT, siptrace_net_data_sent);
 		} else if(_siptrace_init_mode==SIPTRACE_INIT_MODE_CORECB) {
 			LM_ERR("invalid config options for core callbacks tracing\n");
 			return -1;
@@ -2039,6 +2051,8 @@ static void trace_free_info(void* trace_info)
 	shm_free(trace_info);
 }
 
+static siptrace_data_t* siptrace_event_data = NULL;
+
 static int siptrace_exec_evcb_msg(siptrace_data_t *sto)
 {
 	int backup_rt;
@@ -2068,6 +2082,7 @@ static int siptrace_exec_evcb_msg(siptrace_data_t *sto)
 	set_route_type(EVENT_ROUTE);
 	init_run_actions_ctx(&ctx);
 
+	siptrace_event_data = sto;
 	if(_siptrace_evrt_msg_idx>=0) {
 		run_top_route(event_rt.rlist[_siptrace_evrt_msg_idx], &msg, &ctx);
 	} else {
@@ -2080,6 +2095,7 @@ static int siptrace_exec_evcb_msg(siptrace_data_t *sto)
 			sr_kemi_act_ctx_set(bctx);
 		}
 	}
+	siptrace_event_data = NULL;
 
 	free_sip_msg(&msg);
 	set_route_type(backup_rt);
@@ -2117,7 +2133,7 @@ int siptrace_net_data_recv(sr_event_param_t *evp)
 
 	sto.fromip.len = snprintf(sto.fromip_buff, SIPTRACE_ADDR_MAX, "%s:%s:%d",
 			siptrace_proto_name(nd->rcv->proto),
-			ip_addr2a(&nd->rcv->src_ip), (int)nd->rcv->src_port);
+			ip_addr2strz(&nd->rcv->src_ip), (int)nd->rcv->src_port);
 	if(sto.fromip.len<0 || sto.fromip.len>=SIPTRACE_ADDR_MAX) {
 		LM_ERR("failed to format toip buffer (%d)\n", sto.fromip.len);
 		sto.fromip.s = SIPTRACE_ANYADDR;
@@ -2127,7 +2143,7 @@ int siptrace_net_data_recv(sr_event_param_t *evp)
 	}
 
 	sto.toip.len = snprintf(sto.toip_buff, SIPTRACE_ADDR_MAX, "%s:%s:%d",
-			siptrace_proto_name(nd->rcv->proto), ip_addr2a(&nd->rcv->dst_ip),
+			siptrace_proto_name(nd->rcv->proto), ip_addr2strz(&nd->rcv->dst_ip),
 			(int)nd->rcv->dst_port);
 	if(sto.toip.len<0 || sto.toip.len>=SIPTRACE_ADDR_MAX) {
 		LM_ERR("failed to format toip buffer (%d)\n", sto.toip.len);
@@ -2141,8 +2157,11 @@ int siptrace_net_data_recv(sr_event_param_t *evp)
 
 	if(siptrace_exec_evcb_msg(&sto) == DROP_R_F) {
 		/* drop() used in event_route - all done */
+		LM_DBG("skipping processing message due to drop\n");
 		return 0;
 	}
+
+	LM_DBG("processing message mode %d\n", _siptrace_mode);
 
 	if(_siptrace_mode & SIPTRACE_MODE_HEP) {
 		trace_send_hep_duplicate(&sto.body, &sto.fromip, &sto.toip, NULL, NULL);
@@ -2154,7 +2173,7 @@ int siptrace_net_data_recv(sr_event_param_t *evp)
 		tmsg.len = sto.body.len;
 
 		if (parse_msg(tmsg.buf, tmsg.len, &tmsg)!=0) {
-			LM_DBG("msg buffer parsing failed!");
+			LM_DBG("msg buffer parsing failed!\n");
 			goto afterdb;
 		}
 
@@ -2205,12 +2224,13 @@ afterdb:
 /**
  *
  */
-int siptrace_net_data_send(sr_event_param_t *evp)
+int siptrace_net_data_sent(sr_event_param_t *evp)
 {
 	sr_net_info_t *nd;
 	dest_info_t new_dst;
 	siptrace_data_t sto;
 	sip_msg_t tmsg;
+	int proto;
 
 	if(evp->data == 0)
 		return -1;
@@ -2238,6 +2258,7 @@ int siptrace_net_data_send(sr_event_param_t *evp)
 		LM_WARN("no sending socket found\n");
 		strcpy(sto.fromip_buff, SIPTRACE_ANYADDR);
 		sto.fromip.len = SIPTRACE_ANYADDR_LEN;
+		proto = PROTO_UDP;
 	} else {
 		if(new_dst.send_sock->sock_str.len>=SIPTRACE_ADDR_MAX-1) {
 			LM_ERR("socket string is too large: %d\n",
@@ -2247,11 +2268,12 @@ int siptrace_net_data_send(sr_event_param_t *evp)
 		strncpy(sto.fromip_buff, new_dst.send_sock->sock_str.s,
 				new_dst.send_sock->sock_str.len);
 		sto.fromip.len = new_dst.send_sock->sock_str.len;
+		proto = new_dst.send_sock->proto;
 	}
 	sto.fromip.s = sto.fromip_buff;
 
 	sto.toip.len = snprintf(sto.toip_buff, SIPTRACE_ADDR_MAX, "%s:%s:%d",
-			siptrace_proto_name(new_dst.send_sock->proto),
+			siptrace_proto_name(proto),
 			suip2a(&new_dst.to, sizeof(new_dst.to)),
 			(int)su_getport(&new_dst.to));
 	if(sto.toip.len<0 || sto.toip.len>=SIPTRACE_ADDR_MAX) {
@@ -2266,8 +2288,11 @@ int siptrace_net_data_send(sr_event_param_t *evp)
 
 	if(siptrace_exec_evcb_msg(&sto) == DROP_R_F) {
 		/* drop() used in event_route - all done */
+		LM_DBG("skipping processing message due to drop\n");
 		return 0;
 	}
+
+	LM_DBG("processing message mode %d\n", _siptrace_mode);
 
 	if(_siptrace_mode & SIPTRACE_MODE_HEP) {
 		trace_send_hep_duplicate(&sto.body, &sto.fromip, &sto.toip, NULL, NULL);
@@ -2279,7 +2304,7 @@ int siptrace_net_data_send(sr_event_param_t *evp)
 		tmsg.len = sto.body.len;
 
 		if (parse_msg(tmsg.buf, tmsg.len, &tmsg)!=0) {
-			LM_DBG("msg buffer parsing failed!");
+			LM_DBG("msg buffer parsing failed!\n");
 			goto afterdb;
 		}
 
@@ -2473,6 +2498,144 @@ static sr_kemi_t sr_kemi_siptrace_exports[] = {
 
 	{ {0, 0}, {0, 0}, 0, NULL, { 0, 0, 0, 0, 0, 0 } }
 };
+
+/**
+ *
+ */
+int pv_get_siptrace(sip_msg_t *msg, pv_param_t *param,
+		pv_value_t *res)
+{
+	str host;
+	int port;
+	int proto;
+	str sproto;
+	if (siptrace_event_data==NULL) {
+		return pv_get_null(msg, param, res);
+	}
+
+	switch(param->pvn.u.isname.name.n) {
+		case 2: /* src_host */
+		case 4: /* src_port */
+		case 6: /* src_proto */
+		case 8: /* src_hostip */
+			if (parse_phostport(siptrace_event_data->fromip.s, &host.s, &host.len, &port, &proto)!=0) {
+				LM_ERR("invalid src_addr: %.*s\n", siptrace_event_data->fromip.len, siptrace_event_data->fromip.s);
+				return pv_get_null(msg, param, res);
+			}
+		break;
+		case 3: /* dst_host */
+		case 5: /* dst_port */
+		case 7: /* dst_proto */
+		case 9: /* dst_hostip */
+			if (parse_phostport(siptrace_event_data->toip.s, &host.s, &host.len, &port, &proto)!=0) {
+				LM_ERR("invalid dst_addr: %.*s\n", siptrace_event_data->toip.len, siptrace_event_data->toip.s);
+				return pv_get_null(msg, param, res);
+			}
+		break;
+	}
+
+	switch(param->pvn.u.isname.name.n) {
+		case 6: /* src_proto */
+		case 7: /* dst_proto */
+			if(get_valid_proto_string(proto, 0, 0, &sproto)<0)
+			{
+				sproto.s = "none";
+				sproto.len = 4;
+			}
+		break;
+	}
+
+	switch(param->pvn.u.isname.name.n) {
+		case 8: /* src_hostip */
+		case 9: /* dst_hostip */
+
+			/* now IPv6 address has brakets that not wanted in IP address operations */
+			if(host.s[0] == '[' && host.s[host.len-1] == ']') {
+				host.s++;
+				host.len = host.len - 2;
+			}
+		break;
+	}
+
+	switch(param->pvn.u.isname.name.n) {
+		case 0: /* src_addr */
+			return pv_get_strval(msg, param, res, &siptrace_event_data->fromip);
+		case 1: /* dst_addr */
+			return pv_get_strval(msg, param, res, &siptrace_event_data->toip);
+		case 2: /* src_host */
+			return pv_get_strval(msg, param, res, &host);
+		case 3: /* dst_host */
+			return pv_get_strval(msg, param, res, &host);
+		case 4: /* src_port */
+			return pv_get_sintval(msg, param, res, port);
+		case 5: /* dst_port */
+			return pv_get_sintval(msg, param, res, port);
+		case 6: /* src_proto */
+			return pv_get_strintval(msg, param, res, &sproto, proto);
+		case 7: /* dst_proto */
+			return pv_get_strintval(msg, param, res, &sproto, proto);
+		case 8: /* src_hostip */
+			return pv_get_strval(msg, param, res, &host);
+		case 9: /* dst_hostip */
+			return pv_get_strval(msg, param, res, &host);
+		default:
+			LM_ERR("unexpected config param\n");
+			return pv_get_null(msg, param, res);
+	}
+}
+
+/**
+ *
+ */
+int pv_parse_siptrace_name(pv_spec_t *sp, str *in)
+{
+	if(sp==NULL || in==NULL || in->len<=0)
+		return -1;
+
+	switch(in->len)
+	{
+		case 8:
+			if(strncmp(in->s, "src_addr", 8)==0)
+				sp->pvp.pvn.u.isname.name.n = 0;
+			else if(strncmp(in->s, "dst_addr", 8)==0)
+				sp->pvp.pvn.u.isname.name.n = 1;
+			else if(strncmp(in->s, "src_host", 8)==0)
+				sp->pvp.pvn.u.isname.name.n = 2;
+			else if(strncmp(in->s, "dst_host", 8)==0)
+				sp->pvp.pvn.u.isname.name.n = 3;
+			else if(strncmp(in->s, "src_port", 8)==0)
+				sp->pvp.pvn.u.isname.name.n = 4;
+			else if(strncmp(in->s, "dst_port", 8)==0)
+				sp->pvp.pvn.u.isname.name.n = 5;
+			else goto error;
+		break;
+		case 9:
+			if(strncmp(in->s, "src_proto", 9)==0)
+				sp->pvp.pvn.u.isname.name.n = 6;
+			else if(strncmp(in->s, "dst_proto", 9)==0)
+				sp->pvp.pvn.u.isname.name.n = 7;
+			else goto error;
+		break;
+		case 10:
+			if(strncmp(in->s, "src_hostip", 10)==0)
+				sp->pvp.pvn.u.isname.name.n = 8;
+			else if(strncmp(in->s, "dst_hostip", 10)==0)
+				sp->pvp.pvn.u.isname.name.n = 9;
+			else goto error;
+		break;
+		default:
+			goto error;
+	}
+	sp->pvp.pvn.type = PV_NAME_INTSTR;
+	sp->pvp.pvn.u.isname.type = 0;
+
+	return 0;
+
+error:
+	LM_ERR("unknown PV snd name %.*s\n", in->len, in->s);
+	return -1;
+}
+
 /* clang-format on */
 
 /**

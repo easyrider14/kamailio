@@ -562,6 +562,67 @@ struct socket_info** get_sock_info_list(unsigned short proto)
 	return 0;
 }
 
+/* Check list of active local IPs for grep_sock_info
+ * This function is only used for sockets with the SI_IS_VIRTUAL flag set. This
+ * is so floating (virtual) IPs that are not currently local, are not returned
+ * as matches by grep_sock_info.
+ *
+ * Params:
+ * - si - Socket info of socket that has been flagged with SI_IS_VIRTUAL, 
+ *   that we want to check if it's actually local right now.
+ *
+ * Returns 1 if socket is local, or 0 if not.
+ */
+static int check_local_addresses(struct socket_info* si)
+{
+	int match = 0;
+	struct ifaddrs *ifap, *ifa;
+
+	if (si == NULL) {
+		LM_ERR("Socket info is NULL. Returning no match.\n");
+		return 0;
+	}
+
+	if (!(si->flags & SI_IS_VIRTUAL)) {
+		LM_ERR("Have been passed a socket without the virtual flag set. This should "
+			"not happen. Returning a match to maintain standard behaviour.\n");
+		return 1;
+	}
+
+	if (getifaddrs(&ifap) != 0) {
+		LM_ERR("getifaddrs failed. Assuming no match.\n");
+		return 0;
+	}
+
+	for (ifa = ifap; ifa; ifa = ifa->ifa_next)
+	{
+		/* skip if no IP addr associated with the interface */
+		if (ifa->ifa_addr==0)
+			continue;
+#ifdef AF_PACKET
+		/* skip AF_PACKET addr family since it is of no use later on */
+		if (ifa->ifa_addr->sa_family == AF_PACKET)
+			continue;
+#endif
+		struct ip_addr local_addr;
+		sockaddr2ip_addr(&local_addr, (struct sockaddr*)ifa->ifa_addr);
+
+		LM_DBG("Checking local address: %s\n", ip_addr2a(&local_addr));
+		if (ip_addr_cmp(&si->address, &local_addr)) {
+			match = 1;
+			LM_DBG("Found matching local IP %s for virtual socket %s\n", ip_addr2a(&local_addr), si->name.s);
+			break;
+		}
+	}
+	freeifaddrs(ifap);
+	//Default to not local if no match is found
+	if (!match) {
+		LM_DBG("No matching local IP found for socket %s.\n", si->name.s);
+		return 0;
+	} else {
+		return 1;
+	}
+}
 
 /* helper function for grep_sock_info
  * params:
@@ -653,7 +714,16 @@ retry:
 			}
 			if (si_hname_cmp(&hname, &si->name, &si->address_str,
 								&si->address, si->flags)==0) {
-				goto found;
+				if (si->flags & SI_IS_VIRTUAL) {
+					LM_DBG("Checking virtual socket: [%.*s]\n", si->name.len, si->name.s);
+					if (check_local_addresses(si)) {
+						goto found;
+					} else {
+						LM_DBG("Skipping virtual socket that is not local.\n");
+					}
+				} else {
+					goto found;
+				}
 			}
 			if(si->useinfo.name.s!=NULL) {
 				LM_DBG("checking advertise if host==us:"
@@ -2071,10 +2141,11 @@ void print_all_socket_lists()
 				for (ai=si->addr_info_lst; ai; ai=ai->next) {
 					printf(", %s", ai->address_str.s);
 				}
-				printf("):%s%s%s\n",
+				printf("):%s%s%s%s\n",
 						si->port_no_str.s,
-						si->flags & SI_IS_MCAST ? " mcast" : "",
-						si->flags & SI_IS_MHOMED? " mhomed" : "");
+						si->flags & SI_IS_MCAST  ? " mcast" : "",
+						si->flags & SI_IS_MHOMED ? " mhomed" : "",
+						si->flags & SI_IS_VIRTUAL? " virtual" : "");
 			}else{
 				printf("             %s: %s",
 						get_valid_proto_name(proto),
@@ -2082,10 +2153,11 @@ void print_all_socket_lists()
 				if (!(si->flags & SI_IS_IP)) {
 					printf(" [%s]", si->address_str.s);
 				}
-				printf( ":%s%s%s",
+				printf( ":%s%s%s%s",
 						si->port_no_str.s,
-						si->flags & SI_IS_MCAST ? " mcast" : "",
-						si->flags & SI_IS_MHOMED? " mhomed" : "");
+						si->flags & SI_IS_MCAST  ? " mcast" : "",
+						si->flags & SI_IS_MHOMED ? " mhomed" : "",
+						si->flags & SI_IS_VIRTUAL? " virtual" : "");
 				if (si->sockname.s) {
 					printf(" name %s", si->sockname.s);
 				}

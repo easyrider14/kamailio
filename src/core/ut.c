@@ -32,6 +32,11 @@
 #include <sys/utsname.h> /* uname() */
 #include <libgen.h>
 
+#ifdef __OS_darwin
+/* portable clock_gettime() */
+#include <mach/clock.h>
+#include <mach/mach.h>
+#endif
 
 #include "ut.h"
 #include "mem/mem.h"
@@ -149,6 +154,27 @@ time_t utc2local(time_t in)
 #endif
 }
 
+
+/**
+ * portable implementation for clock_gettime(CLOCK_REALTIME, ts)
+ */
+int ksr_clock_gettime(struct timespec *ts)
+{
+#ifdef __OS_darwin
+	clock_serv_t cclock;
+	mach_timespec_t mts;
+
+	/* OS X does not have clock_gettime, use clock_get_time */
+	host_get_clock_service(mach_host_self(), CALENDAR_CLOCK, &cclock);
+	clock_get_time(cclock, &mts);
+	mach_port_deallocate(mach_task_self(), cclock);
+	ts->tv_sec = mts.tv_sec;
+	ts->tv_nsec = mts.tv_nsec;
+	return 0;
+#else
+	return clock_gettime(CLOCK_REALTIME, ts);
+#endif
+}
 
 /*
  * Return str as zero terminated string allocated
@@ -327,7 +353,7 @@ char *stre_search_strz(char *vstart, char *vend, char *needlez)
 char *str_casesearch(str *text, str *needle)
 {
 	int i,j;
-	for(i=0;i<text->len-needle->len;i++) {
+	for(i=0;i<=text->len-needle->len;i++) {
 		for(j=0;j<needle->len;j++) {
 			if ( !((text->s[i+j]==needle->s[j]) ||
 					( isalpha((int)text->s[i+j])
@@ -337,7 +363,7 @@ char *str_casesearch(str *text, str *needle)
 		if (j==needle->len)
 			return text->s+i;
 	}
-	return 0;
+	return NULL;
 }
 
 /**
@@ -364,6 +390,49 @@ char *str_casesearch_strz(str *text, char *needlez)
 	needle.len = strlen(needlez);
 
 	return str_casesearch(text, &needle);
+}
+
+/**
+ * @brief search for last occurence of needle in text (reverse search)
+ * @return pointer to start of needle in text or NULL if the needle
+ *	is not found
+ */
+char *str_rsearch(str *text, str *needle)
+{
+    char *p;
+
+    if(text==NULL || text->s==NULL || needle==NULL || needle->s==NULL
+			|| text->len<needle->len)
+        return NULL;
+
+    for (p = text->s + text->len - needle->len; p >= text->s; p--) {
+        if (*p == *needle->s && memcmp(p, needle->s, needle->len)==0) {
+            return p;
+        }
+    }
+
+    return NULL;
+}
+
+/**
+ * @brief case insensitive search for last occurence of needle in text (reverse search)
+ * @return pointer to start of needle in text or NULL if the needle
+ *	is not found
+ */
+char *str_rcasesearch(str *text, str *needle)
+{
+	int i,j;
+	for(i=text->len-needle->len;i>=0;i--) {
+		for(j=0;j<needle->len;j++) {
+			if ( !((text->s[i+j]==needle->s[j]) ||
+					( isalpha((int)text->s[i+j])
+						&& ((text->s[i+j])^(needle->s[j]))==0x20 )) )
+				break;
+		}
+		if (j==needle->len)
+			return text->s+i;
+	}
+	return NULL;
 }
 
 /*

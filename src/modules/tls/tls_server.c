@@ -132,14 +132,59 @@ int tls_run_event_routes(struct tcp_connection *c);
 
 extern str sr_tls_xavp_cfg;
 
+static str _ksr_tls_connect_server_id = STR_NULL;
+
+int ksr_tls_set_connect_server_id(str *srvid)
+{
+	if(srvid==NULL || srvid->len<=0) {
+		if(_ksr_tls_connect_server_id.s) {
+			pkg_free(_ksr_tls_connect_server_id.s);
+		}
+		_ksr_tls_connect_server_id.s = NULL;
+		_ksr_tls_connect_server_id.len = 0;
+		return 0;
+	}
+
+	if(_ksr_tls_connect_server_id.len>=srvid->len) {
+		memcpy(_ksr_tls_connect_server_id.s, srvid->s, srvid->len);
+		_ksr_tls_connect_server_id.len = srvid->len;
+		return 0;
+	}
+
+	if(_ksr_tls_connect_server_id.s) {
+		pkg_free(_ksr_tls_connect_server_id.s);
+	}
+	_ksr_tls_connect_server_id.len = 0;
+
+	_ksr_tls_connect_server_id.s = (char*)pkg_mallocxz(srvid->len + 1);
+	if(_ksr_tls_connect_server_id.s==NULL) {
+		PKG_MEM_ERROR;
+		return -1;
+	}
+
+	memcpy(_ksr_tls_connect_server_id.s, srvid->s, srvid->len);
+	_ksr_tls_connect_server_id.len = srvid->len;
+
+	return 0;
+}
+
 static str *tls_get_connect_server_id(void)
 {
 	sr_xavp_t *vavp = NULL;
 	str sid = {"server_id", 9};
-	if(sr_tls_xavp_cfg.s!=NULL)
+
+	if(sr_tls_xavp_cfg.s!=NULL) {
 		vavp = xavp_get_child_with_sval(&sr_tls_xavp_cfg, &sid);
+	}
 	if(vavp==NULL || vavp->val.v.s.len<=0) {
 		LM_DBG("xavp with outbound server id not found\n");
+		if(_ksr_tls_connect_server_id.len>0) {
+			LM_DBG("found global outbound server id: %.*s\n",
+					_ksr_tls_connect_server_id.len,
+					_ksr_tls_connect_server_id.s);
+			return &_ksr_tls_connect_server_id;
+		}
+		LM_DBG("outbound server id not set\n");
 		return NULL;
 	}
 	LM_DBG("found xavp with outbound server id: %s\n", vavp->val.v.s.s);
@@ -218,6 +263,7 @@ static int tls_complete_init(struct tcp_connection* c)
 		srvid = tls_get_connect_server_id();
 		dom = tls_lookup_cfg(cfg, TLS_DOMAIN_CLI,
 						&c->rcv.dst_ip, c->rcv.dst_port, sname, srvid);
+		ksr_tls_set_connect_server_id(NULL);
 	}
 	if (unlikely(c->state<0)) {
 		BUG("Invalid connection (state %d)\n", c->state);
@@ -239,7 +285,7 @@ static int tls_complete_init(struct tcp_connection* c)
 	data->state = state;
 
 	if (unlikely(data->ssl == 0 || data->rwbio == 0)) {
-		TLS_ERR("Failed to create SSL or BIO structure:");
+		TLS_ERR_SSL("Failed to create SSL or BIO structure:", data->ssl);
 		if (data->ssl)
 			SSL_free(data->ssl);
 		if (data->rwbio)
@@ -400,7 +446,7 @@ EVP_PKEY * tls_lookup_private_key(SSL_CTX*);
 int tls_accept(struct tcp_connection *c, int* error)
 {
 	int ret;
-	SSL *ssl;
+	SSL *ssl = NULL;
 	X509* cert;
 	struct tls_extra_data* tls_c;
 	int tls_log;
@@ -746,7 +792,7 @@ int tls_h_encode_f(struct tcp_connection *c,
 						snd_flags_t* send_flags)
 {
 	int n, offs;
-	SSL* ssl;
+	SSL* ssl = NULL;
 	struct tls_extra_data* tls_c;
 	static unsigned char wr_buf[TLS_WR_MBUF_SZ];
 	struct tls_mbuf rd, wr;
@@ -883,7 +929,7 @@ redo_wr:
 			case SSL_ERROR_SSL:
 				/* protocol level error */
 				ERR("protocol level error\n");
-				TLS_ERR(err_src);
+				TLS_ERR_SSL(err_src, ssl);
 				memset(ip_buf, 0, sizeof(buf));
 				ip_addr2sbuf(&(c->rcv.src_ip), ip_buf, sizeof(ip_buf));
 				ERR("source IP: %s\n", ip_buf);
@@ -924,7 +970,7 @@ redo_wr:
 				}
 				goto error;
 			default:
-				TLS_ERR(err_src);
+				TLS_ERR_SSL(err_src, ssl);
 				BUG("unexpected SSL error %d\n", ssl_error);
 				goto bug;
 		}
@@ -1007,6 +1053,7 @@ int tls_h_read_f(struct tcp_connection* c, rd_conn_flags_t* flags)
 	int x;
 	int tls_dbg;
 
+	ssl = NULL;
 	TLS_RD_TRACE("(%p, %p (%d)) start (%s -> %s:%d*)\n",
 					c, flags, *flags,
 					su2a(&c->rcv.src_su, sizeof(c->rcv.src_su)),
@@ -1281,13 +1328,13 @@ ssl_read_skipped:
 		case SSL_ERROR_SSL:
 			/* protocol level error */
 			ERR("protocol level error\n");
-			TLS_ERR(err_src);
+			TLS_ERR_SSL(err_src, ssl);
 			memset(ip_buf, 0, sizeof(ip_buf));
 			ip_addr2sbuf(&(c->rcv.src_ip), ip_buf, sizeof(ip_buf));
-			ERR("source IP: %s\n", ip_buf);
+			ERR("src addr: %s:%d\n", ip_buf, c->rcv.src_port);
 			memset(ip_buf, 0, sizeof(ip_buf));
 			ip_addr2sbuf(&(c->rcv.dst_ip), ip_buf, sizeof(ip_buf));
-			ERR("destination IP: %s\n", ip_buf);
+			ERR("dst addr: %s:%d\n", ip_buf, c->rcv.dst_port);
 
 			goto error;
 #if OPENSSL_VERSION_NUMBER >= 0x00907000L /*0.9.7*/
@@ -1322,7 +1369,7 @@ ssl_read_skipped:
 			}
 			goto error;
 		default:
-			TLS_ERR(err_src);
+			TLS_ERR_SSL(err_src, ssl);
 			BUG("unexpected SSL error %d\n", ssl_error);
 			goto bug;
 	}

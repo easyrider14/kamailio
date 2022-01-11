@@ -325,7 +325,7 @@ int ds_set_attrs(ds_dest_t *dest, str *vattrs)
 				dest->attrs.weight = tmp_ival;
 			} else {
 				dest->attrs.weight = 0;
-				LM_ERR("weight %d not in 1-100 range - ignoring destination",
+				LM_ERR("weight %d not in 1-100 range - ignoring destination\n",
 						tmp_ival);
 			}
 		} else if(pit->name.len == 7
@@ -350,7 +350,7 @@ int ds_set_attrs(ds_dest_t *dest, str *vattrs)
 				dest->attrs.rweight = tmp_ival;
 			} else {
 				dest->attrs.rweight = 0;
-				LM_WARN("rweight %d not in 1-100 range - ignoring", tmp_ival);
+				LM_WARN("rweight %d not in 1-100 range - ignoring\n", tmp_ival);
 			}
 		} else if(pit->name.len == 9
 				&& strncasecmp(pit->name.s, "ping_from", 9) == 0) {
@@ -1192,7 +1192,7 @@ unsigned int ds_get_hash(str *x, str *y)
 	if(!x && !y)
 		return 0;
 	h = 0;
-	if(x) {
+	if(x && x->s) {
 		p = x->s;
 		if(x->len >= 4) {
 			for(; p <= (x->s + x->len - 4); p += 4) {
@@ -1207,7 +1207,7 @@ unsigned int ds_get_hash(str *x, str *y)
 		}
 		h += v ^ (v >> 3);
 	}
-	if(y) {
+	if(y && y->s) {
 		p = y->s;
 		if(y->len >= 4) {
 			for(; p <= (y->s + y->len - 4); p += 4) {
@@ -2201,7 +2201,7 @@ int ds_manage_route_algo13(ds_set_t *idx, ds_select_state_t *rstate) {
 	}
 
 	for(y=0; y<idx->nr ;y++) {
-		int latency_proirity_handicap = 0;
+		int latency_priority_handicap = 0;
 		ds_dest_t * ds_dest = &idx->dlist[z];
 		int gw_priority = ds_dest->priority;
 		int gw_latency = ds_dest->latency_stats.estimate;
@@ -2211,19 +2211,15 @@ int ds_manage_route_algo13(ds_set_t *idx, ds_select_state_t *rstate) {
 			gw_latency = ds_dest->latency_stats.estimate - ds_dest->latency_stats.average;
 		if(!gw_inactive) {
 			if(gw_latency > gw_priority && gw_priority > 0)
-				latency_proirity_handicap = gw_latency / gw_priority;
-			ds_dest->attrs.rpriority = gw_priority - latency_proirity_handicap;
+				latency_priority_handicap = gw_latency / gw_priority;
+			ds_dest->attrs.rpriority = gw_priority - latency_priority_handicap;
 			if(ds_dest->attrs.rpriority < 1 && gw_priority > 0)
 				ds_dest->attrs.rpriority = 1;
-			if(ds_dest->attrs.rpriority > active_priority) {
-				hash = z;
-				active_priority = ds_dest->attrs.rpriority;
-			}
 			ds_sorted[y].idx = z;
 			ds_sorted[y].priority = ds_dest->attrs.rpriority;
 			LM_DBG("[active]idx[%d]uri[%.*s]priority[%d-%d=%d]latency[%dms]flag[%d]\n",
 				z, ds_dest->uri.len, ds_dest->uri.s,
-				gw_priority, latency_proirity_handicap,
+				gw_priority, latency_priority_handicap,
 				ds_dest->attrs.rpriority, gw_latency, ds_dest->flags);
 		} else {
 			ds_sorted[y].idx = -1;
@@ -2237,10 +2233,15 @@ int ds_manage_route_algo13(ds_set_t *idx, ds_select_state_t *rstate) {
 		else
 			z = (z + 1) % idx->nr;
 	}
+	ds_sorted_by_priority(ds_sorted, idx->nr);
+	// the list order might have changed after sorting - update hash
+	if(idx->nr > 0) {
+		hash = ds_sorted[0].idx;
+		active_priority = ds_sorted[0].priority;
+	}
+	ds_manage_routes_fill_reodered_xavp(ds_sorted, idx, rstate);
 	idx->last = (hash + 1) % idx->nr;
 	LM_DBG("priority[%d]gateway_selected[%d]next_index[%d]\n", active_priority, hash, idx->last);
-	ds_sorted_by_priority(ds_sorted, idx->nr);
-	ds_manage_routes_fill_reodered_xavp(ds_sorted, idx, rstate);
 	pkg_free(ds_sorted);
 	return hash;
 }
@@ -2733,7 +2734,8 @@ int ds_mark_dst(struct sip_msg *msg, int state)
 	return (ret == 0) ? 1 : -1;
 }
 
-void latency_stats_init(ds_latency_stats_t *latency_stats, int latency, int count) {
+void latency_stats_init(ds_latency_stats_t *latency_stats, int latency, int count)
+{
 	latency_stats->stdev = 0.0f;
 	latency_stats->m2 = 0.0f;
 	latency_stats->max = latency;
@@ -2743,14 +2745,17 @@ void latency_stats_init(ds_latency_stats_t *latency_stats, int latency, int coun
 	latency_stats->count = count;
 }
 
-static inline void latency_stats_update(ds_latency_stats_t *latency_stats, int latency) {
+#define _VOR1(v) ((v)?(v):1)
+
+static inline void latency_stats_update(ds_latency_stats_t *latency_stats, int latency)
+{
 	int training_count = 10000;
 
 	/* after 2^21 ~24 days at 1s interval, the average becomes a weighted average */
 	if (latency_stats->count < 2097152) {
 		latency_stats->count++;
 	} else { /* We adjust the sum of squares used by the oneline algorithm proportionally */
-		latency_stats->m2 -= latency_stats->m2/latency_stats->count;
+		latency_stats->m2 -= latency_stats->m2/_VOR1(latency_stats->count);
 	}
 
 	if (latency_stats->count == 1)
@@ -2771,10 +2776,10 @@ static inline void latency_stats_update(ds_latency_stats_t *latency_stats, int l
 		float delta;
 		float delta2;
 		delta = latency - latency_stats->average;
-		latency_stats->average += delta/latency_stats->count;
+		latency_stats->average += delta/_VOR1(latency_stats->count);
 		delta2 = latency - latency_stats->average;
 		latency_stats->m2 += ((double)delta)*delta2;
-		latency_stats->stdev = sqrt(latency_stats->m2 / (latency_stats->count-1));
+		latency_stats->stdev = sqrt(latency_stats->m2 / _VOR1(latency_stats->count-1));
 	}
 	/* exponentialy weighted moving average */
 	if (latency_stats->count < 10) {
@@ -2793,7 +2798,8 @@ typedef struct congestion_control_state {
 	int apply_rweights;
 } congestion_control_state_t;
 
-int ds_update_weighted_congestion_control(congestion_control_state_t *cc, int weight, ds_latency_stats_t *latency_stats)
+int ds_update_weighted_congestion_control(congestion_control_state_t *cc,
+		int weight, ds_latency_stats_t *latency_stats)
 {
 	int active_weight = 0;
 	int congestion_ms = latency_stats->estimate - latency_stats->average;
@@ -2894,7 +2900,7 @@ int ds_update_latency(int group, str *address, int code)
 			ds_latency_stats_t *latency_stats = &ds_dest->latency_stats;
 			congestion_ms = latency_stats->estimate - latency_stats->average;
 			/* We multiply by 2^4 to keep enough precision */
-			active_weight = (cc.total_congestion_ms << 4) / congestion_ms;
+			active_weight = (cc.total_congestion_ms << 4) / _VOR1(congestion_ms);
 			if (ds_dest->attrs.rweight != active_weight) {
 				cc.apply_rweights = 1;
 				ds_dest->attrs.rweight = active_weight;
@@ -3450,6 +3456,32 @@ int ds_is_from_list(struct sip_msg *_m, int group)
 	return ds_is_addr_from_list(_m, group, NULL, DS_MATCH_NOPROTO);
 }
 
+/**
+ * Check if the a group has any or a specific active uri
+ */
+int ds_is_active_uri(sip_msg_t *msg, int group, str *uri)
+{
+	ds_set_t *list;
+	int j;
+
+	list = ds_avl_find(_ds_list, group);
+	if(list) {
+		for(j = 0; j < list->nr; j++) {
+			if(!ds_skip_dst(list->dlist[j].flags)) {
+				if(uri==NULL || uri->s==NULL || uri->len<=0) {
+					return 1;
+				}
+				if((list->dlist[j].uri.len==uri->len)
+						&& (memcmp(list->dlist[j].uri.s, uri->s, uri->len)==0)) {
+					return 1;
+				}
+			}
+		}
+	}
+
+	return -1;
+}
+
 /*! \brief
  * Callback-Function for the OPTIONS-Request
  * This Function is called, as soon as the Transaction is finished
@@ -3496,6 +3528,11 @@ static void ds_options_callback(
 			rctx.flags |= 1;
 			rctx.reason = ps->rpl->first_line.u.reply.reason;
 		}
+	}
+
+	/* Check if in the meantime someone disabled probing of the target through RPC, MI or reload */
+	if(ds_probing_mode == DS_PROBE_ONLYFLAGGED && !(ds_get_state(group, &uri) & DS_PROBING_DST)) {
+		return;
 	}
 
 	/* ps->code contains the result-code of the request.

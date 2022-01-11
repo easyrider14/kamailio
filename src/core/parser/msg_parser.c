@@ -316,13 +316,14 @@ int parse_headers(struct sip_msg* const msg, const hdr_flags_t flags, const int 
 	if (unlikely(next)) {
 		orig_flag = msg->parsed_flag;
 		msg->parsed_flag &= ~flags;
-	}else
+	} else {
 		orig_flag=0;
+	}
 
 #ifdef EXTRA_DEBUG
 	DBG("flags=%llx\n", (unsigned long long)flags);
 #endif
-	while( tmp<end && (flags & msg->parsed_flag) != flags){
+	while(tmp<end && (flags & msg->parsed_flag) != flags) {
 		prefetch_loc_r(tmp+64, 1);
 		hf=pkg_malloc(sizeof(struct hdr_field));
 		if (unlikely(hf==0)){
@@ -619,18 +620,25 @@ int parse_headers(struct sip_msg* const msg, const hdr_flags_t flags, const int 
 #endif
 		tmp=rest;
 	}
+
 skip:
 	msg->unparsed=tmp;
+	if(msg->headers==NULL) {
+		/* nothing parsed - invalid input sip message */
+		goto error1;
+	}
 	/* restore original flags */
 	msg->parsed_flag |= orig_flag;
 	return 0;
 
 error:
-	ser_error=E_BAD_REQ;
 	if (hf) {
 		clean_hdr_field(hf);
 		pkg_free(hf);
 	}
+
+error1:
+	ser_error=E_BAD_REQ;
 	/* restore original flags */
 	msg->parsed_flag |= orig_flag;
 	return -1;
@@ -737,7 +745,7 @@ int parse_msg(char* const buf, const unsigned int len, struct sip_msg* const msg
 error:
 	/* more debugging, msg->orig is/should be null terminated*/
 	LOG(cfg_get(core, core_cfg, sip_parser_log), "ERROR: parse_msg: message=<%.*s>\n",
-			(int)msg->len, ZSW(msg->buf));
+			(int)msg->len, ZSW(ksr_buf_oneline(msg->buf, (int)msg->len)));
 	return -1;
 }
 
@@ -1086,6 +1094,42 @@ int msg_set_time(sip_msg_t* const msg)
 }
 
 /**
+ * replace \r\n with . and space
+ */
+char *ksr_buf_oneline(char *inbuf, int inlen)
+{
+	static char outbuf[BUF_SIZE];
+	int outlen;
+	int i = 0;
+
+	if (cfg_get(core, core_cfg, sip_parser_log_oneline) == 0) {
+		return inbuf;
+	}
+
+	if (inbuf == NULL) {
+		outbuf[0] = '\0';
+		return outbuf;
+	}
+
+	outlen = (inlen < BUF_SIZE) ? inlen : BUF_SIZE - 1;
+	memcpy(outbuf, inbuf, outlen);
+	outbuf[outlen] = '\0';
+
+	for (i = 0; i < outlen;  i++) {
+		if (outbuf[i] == '\r')
+		{
+			outbuf[i] = '.';
+		}
+		else if (outbuf[i] == '\n')
+		{
+			outbuf[i] = ' ';
+		}
+	}
+
+	return outbuf;
+}
+
+/**
  * get source ip, port and protocol in SIP URI format
  * - tmode - 0: short format (transport=udp is not added, being default)
  */
@@ -1348,8 +1392,10 @@ char* get_body(sip_msg_t* const msg)
 				(*(msg->unparsed)=='\n' || *(msg->unparsed)=='\r' ) ) {
 		offset = 1;
 	} else {
-		LM_ERR("failed to locate end of headers (%p %p - %d %d [%s])\n",
-				msg->buf, msg->unparsed, msg->len, len, msg->unparsed);
+		LM_ERR("failed to locate end of headers (%p %p - %d %d [%.*s])\n",
+				msg->buf, msg->unparsed, msg->len, len,
+				(len<msg->len)?(msg->len-len):0,
+				(len<msg->len)?msg->unparsed:"");
 		return 0;
 	}
 

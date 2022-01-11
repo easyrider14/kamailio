@@ -1,11 +1,13 @@
 # Kamailio - The Open Source SIP Server
 
-[![Build Status](https://travis-ci.org/kamailio/kamailio.svg?branch=master)](https://travis-ci.org/kamailio/kamailio)
+[![Build Status](https://github.com/kamailio/kamailio/actions/workflows/main.yml/badge.svg)](https://github.com/kamailio/kamailio/actions)
 [![Code Triage Badge](https://www.codetriage.com/kamailio/kamailio/badges/users.svg)](https://www.codetriage.com/kamailio/kamailio)
 
 Project Website:
 
   * http://www.kamailio.org
+
+[20 Years Of Kamailio Development: Sep 3, 2001 - Sep 3, 2021](https://www.kamailio.org/w/2021/09/kamailio-20-years-of-development/)
 
 ## Overview
 

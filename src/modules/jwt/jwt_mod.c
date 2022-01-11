@@ -41,7 +41,8 @@ static int  mod_init(void);
 static int  child_init(int);
 static void mod_destroy(void);
 
-static int w_jwt_generate(sip_msg_t* msg, char* pkey, char* palg, char* pclaims);
+static int w_jwt_generate_4(sip_msg_t* msg, char* pkey, char* palg, char* pclaims, char* pheaders);
+static int w_jwt_generate_3(sip_msg_t* msg, char* pkey, char* palg, char* pclaims);
 static int w_jwt_verify(sip_msg_t* msg, char* pkey, char* palg, char* pclaims,
 		char *pjwtval);
 
@@ -59,7 +60,9 @@ typedef struct jwt_fcache {
 static jwt_fcache_t *_jwt_fcache_list = NULL;
 
 static cmd_export_t cmds[]={
-	{"jwt_generate", (cmd_function)w_jwt_generate, 3,
+	{"jwt_generate", (cmd_function)w_jwt_generate_4, 4,
+		fixup_spve_all, 0, ANY_ROUTE},
+	{"jwt_generate", (cmd_function)w_jwt_generate_3, 3,
 		fixup_spve_all, 0, ANY_ROUTE},
 	{"jwt_verify", (cmd_function)w_jwt_verify, 4,
 		fixup_spve_all, 0, ANY_ROUTE},
@@ -171,10 +174,13 @@ static int jwt_fcache_add(str *key, str *kdata)
 /**
  *
  */
-static int ki_jwt_generate(sip_msg_t* msg, str *key, str *alg, str *claims)
+static int ki_jwt_generate_hdrs(sip_msg_t* msg, str *key, str *alg, str *claims,
+		str *headers)
 {
 	str dupclaims = STR_NULL;
 	str sparams = STR_NULL;
+	str dupheaders = STR_NULL;
+	str sheaders = STR_NULL;
 	str kdata = STR_NULL;
 	jwt_alg_t valg = JWT_ALG_NONE;
 	time_t iat;
@@ -182,10 +188,14 @@ static int ki_jwt_generate(sip_msg_t* msg, str *key, str *alg, str *claims)
 	unsigned char keybuf[10240];
 	size_t keybuf_len = 0;
 	param_t* params_list = NULL;
+	param_t* headers_list = NULL;
 	param_hooks_t phooks;
 	param_t *pit = NULL;
+	param_t *header = NULL;
+
 	int ret = 0;
 	jwt_t *jwt = NULL;
+	long lval = 0;
 
 	if(key==NULL || key->s==NULL || alg==NULL || alg->s==NULL
 			|| claims==NULL || claims->s==NULL || claims->len<=0) {
@@ -205,6 +215,12 @@ static int ki_jwt_generate(sip_msg_t* msg, str *key, str *alg, str *claims)
 	if(pkg_str_dup(&dupclaims, claims)<0) {
 		LM_ERR("failed to duplicate claims\n");
 		return -1;
+	}
+	if (headers!=NULL) {
+		if(pkg_str_dup(&dupheaders, headers)<0) {
+			LM_ERR("failed to duplicate headers\n");
+			return -1;
+		}
 	}
 	jwt_fcache_get(key, &kdata);
 	if(kdata.s==NULL) {
@@ -228,9 +244,23 @@ static int ki_jwt_generate(sip_msg_t* msg, str *key, str *alg, str *claims)
 	if(sparams.s[sparams.len-1]==';') {
 		sparams.len--;
 	}
+	if (headers!=NULL) {
+		sheaders = dupheaders;
+		if(sheaders.s[sheaders.len-1]==';') {
+			sheaders.len--;
+		}
+	}
+
 	if (parse_params(&sparams, CLASS_ANY, &phooks, &params_list)<0) {
 		LM_ERR("failed to parse claims\n");
 		goto error;
+	}
+
+	if (headers!=NULL && headers->s!=NULL && headers->len>0) {
+		if (parse_params(&sheaders, CLASS_ANY, &phooks, &headers_list)<0) {
+			LM_ERR("failed to parse headers\n");
+			goto error;
+		}
 	}
 
 	ret = jwt_new(&jwt);
@@ -242,16 +272,48 @@ static int ki_jwt_generate(sip_msg_t* msg, str *key, str *alg, str *claims)
 	iat = time(NULL);
 
 	ret = jwt_add_grant_int(jwt, "iat", iat);
+	if(ret != 0) {
+		LM_ERR("failed to add iat grant\n");
+		goto error;
+	}
 	for (pit = params_list; pit; pit=pit->next) {
 		if(pit->name.len>0 && pit->body.len>0) {
 			pit->name.s[pit->name.len] = '\0';
 			pit->body.s[pit->body.len] = '\0';
-			jwt_add_grant(jwt, pit->name.s, pit->body.s);
+			if(pit->body.s[-1] == '\"' || pit->body.s[-1] == '\'') {
+				ret = jwt_add_grant(jwt, pit->name.s, pit->body.s);
+			} else if(str2slong(&pit->body, &lval)==0) {
+				ret = jwt_add_grant_int(jwt, pit->name.s, lval);
+			} else {
+				ret = jwt_add_grant(jwt, pit->name.s, pit->body.s);
+			}
+			if(ret != 0) {
+				LM_ERR("failed to add %s grant\n", pit->name.s);
+				goto error;
+			}
+		}
+	}
+
+	for (header = headers_list; header; header=header->next) {
+		if(header->name.len>0 && header->body.len>0) {
+			header->name.s[header->name.len] = '\0';
+			header->body.s[header->body.len] = '\0';
+			if(header->body.s[-1] == '\"' || header->body.s[-1] == '\'') {
+				ret = jwt_add_header(jwt, header->name.s, header->body.s);
+			} else if(str2slong(&header->body, &lval)==0) {
+				ret = jwt_add_header_int(jwt, header->name.s, lval);
+			} else {
+				ret = jwt_add_header(jwt, header->name.s, header->body.s);
+			}
+			if(ret != 0) {
+				LM_ERR("failed to add %s header\n", header->name.s);
+				goto error;
+			}
 		}
 	}
 
 	ret = jwt_set_alg(jwt, valg, (unsigned char*)kdata.s, (size_t)kdata.len);
-	if (ret < 0) {
+	if (ret != 0) {
 		LM_ERR("failed to set algorithm and key\n");
 		goto error;
 	}
@@ -261,6 +323,8 @@ static int ki_jwt_generate(sip_msg_t* msg, str *key, str *alg, str *claims)
 
 	free_params(params_list);
 	pkg_free(dupclaims.s);
+	free_params(headers_list);
+	pkg_free(dupheaders.s);
 	jwt_free(jwt);
 
 	return 1;
@@ -272,6 +336,12 @@ error:
 	if(dupclaims.s!=NULL) {
 		pkg_free(dupclaims.s);
 	}
+	if(headers_list!=NULL) {
+		free_params(headers_list);
+	}
+	if(dupheaders.s!=NULL) {
+		pkg_free(dupheaders.s);
+	}
 	if(jwt!=NULL) {
 		jwt_free(jwt);
 	}
@@ -281,7 +351,15 @@ error:
 /**
  *
  */
-static int w_jwt_generate(sip_msg_t* msg, char* pkey, char* palg, char* pclaims)
+static int ki_jwt_generate(sip_msg_t* msg, str *key, str *alg, str *claims)
+{
+	return ki_jwt_generate_hdrs(msg, key, alg, claims, NULL);
+}
+
+/**
+ *
+ */
+static int w_jwt_generate_3(sip_msg_t* msg, char* pkey, char* palg, char* pclaims)
 {
 	str skey = STR_NULL;
 	str salg = STR_NULL;
@@ -307,6 +385,38 @@ static int w_jwt_generate(sip_msg_t* msg, char* pkey, char* palg, char* pclaims)
 /**
  *
  */
+static int w_jwt_generate_4(sip_msg_t* msg, char* pkey, char* palg, char* pclaims, char* pheaders)
+{
+	str skey = STR_NULL;
+	str salg = STR_NULL;
+	str sclaims = STR_NULL;
+	str sheaders = STR_NULL;
+
+	if (fixup_get_svalue(msg, (gparam_t*)pkey, &skey) != 0) {
+		LM_ERR("cannot get path to the key file\n");
+		return -1;
+	}
+	if (fixup_get_svalue(msg, (gparam_t*)palg, &salg) != 0) {
+		LM_ERR("cannot get algorithm value\n");
+		return -1;
+	}
+
+	if (fixup_get_svalue(msg, (gparam_t*)pclaims, &sclaims) != 0) {
+		LM_ERR("cannot get claims value\n");
+		return -1;
+	}
+
+	if (fixup_get_svalue(msg, (gparam_t*)pheaders, &sheaders) != 0) {
+		LM_ERR("cannot get headers value\n");
+		return -1;
+	}
+
+	return ki_jwt_generate_hdrs(msg, &skey, &salg, &sclaims, &sheaders);
+}
+
+/**
+ *
+ */
 static int ki_jwt_verify(sip_msg_t* msg, str *key, str *alg, str *claims,
 		str *jwtval)
 {
@@ -324,6 +434,7 @@ static int ki_jwt_verify(sip_msg_t* msg, str *key, str *alg, str *claims,
 	jwt_t *jwt = NULL;
 	jwt_valid_t *jwt_valid = NULL;
 	str sparams = STR_NULL;
+	long lval = 0;
 
 	if(key==NULL || key->s==NULL || alg==NULL || alg->s==NULL
 			|| claims==NULL || claims->s==NULL || claims->len<=0
@@ -384,7 +495,17 @@ static int ki_jwt_verify(sip_msg_t* msg, str *key, str *alg, str *claims,
 		if(pit->name.len>0 && pit->body.len>0) {
 			pit->name.s[pit->name.len] = '\0';
 			pit->body.s[pit->body.len] = '\0';
-			jwt_valid_add_grant(jwt_valid, pit->name.s, pit->body.s);
+			if(pit->body.s[-1] == '\"' || pit->body.s[-1] == '\'') {
+				ret = jwt_valid_add_grant(jwt_valid, pit->name.s, pit->body.s);
+			} else if(str2slong(&pit->body, &lval)==0) {
+				ret = jwt_valid_add_grant_int(jwt_valid, pit->name.s, lval);
+			} else {
+				ret = jwt_valid_add_grant(jwt_valid, pit->name.s, pit->body.s);
+			}
+			if(ret != 0) {
+				LM_ERR("failed to add %s valid grant\n", pit->name.s);
+				goto error;
+			}
 		}
 	}
 
@@ -496,6 +617,11 @@ static sr_kemi_t sr_kemi_jwt_exports[] = {
 		SR_KEMIP_INT, ki_jwt_generate,
 		{ SR_KEMIP_STR, SR_KEMIP_STR, SR_KEMIP_STR,
 			SR_KEMIP_NONE, SR_KEMIP_NONE, SR_KEMIP_NONE }
+	},
+	{ str_init("jwt"), str_init("jwt_generate_hdrs"),
+		SR_KEMIP_INT, ki_jwt_generate_hdrs,
+		{ SR_KEMIP_STR, SR_KEMIP_STR, SR_KEMIP_STR,
+			SR_KEMIP_STR, SR_KEMIP_NONE, SR_KEMIP_NONE }
 	},
 	{ str_init("jwt"), str_init("jwt_verify"),
 		SR_KEMIP_INT, ki_jwt_verify,
